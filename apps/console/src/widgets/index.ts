@@ -5,7 +5,16 @@
  * Widgets subscribe to polylabs.data.* lex streams via WidgetDataGateway
  * with RBAC enforcement.
  *
+ * Cross-Widget Communication (Widget Event Bus):
+ *   All widgets use the polydata.* event bus namespace for drill-down,
+ *   filter propagation, and selection sync. See ./event-bus.ts for types.
+ *
+ * Demo Mode:
+ *   Add ?demo=true to Console URL to use ESZ demo fixtures.
+ *   See ./demo-fixtures.ts for realistic mock data.
+ *
  * @see https://github.com/polylabs-dev/polydata/issues/5
+ * @see https://github.com/polyquantum/estream-io/issues/555 (Widget Event Bus, ESZ fixtures)
  */
 
 import { lazy } from 'react';

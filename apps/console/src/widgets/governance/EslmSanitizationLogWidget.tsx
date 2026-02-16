@@ -7,12 +7,19 @@
  *
  * Compliance: HIPAA, PCI-DSS, GDPR, SOC2
  *
+ * Event Bus:
+ *   Listens: CLASSIFICATION_FILTER (filters log entries by classification context)
+ *            TIME_RANGE (filters by time window)
+ *            FILTER_RESET (clears filters)
+ *
  * Lex stream: polylabs.data.eslm.sanitization
  * Required roles: polydata-compliance, polydata-operator
  */
 
 import React from 'react';
 import { useStreamSubscription } from '@estream/sdk-browser';
+import { POLYDATA_EVENTS, usePolydataEvent } from '../event-bus';
+import { getFixture } from '../demo-fixtures';
 
 interface SanitizationEntry {
   timestamp: number;
@@ -25,15 +32,29 @@ interface SanitizationEntry {
 }
 
 export default function EslmSanitizationLogWidget() {
-  const { data, status } = useStreamSubscription(
+  const fixture = getFixture<any>('polydata-eslm-sanitization-log');
+  const timeRange = usePolydataEvent(POLYDATA_EVENTS.TIME_RANGE);
+  const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
+
+  const { data: liveData, status } = useStreamSubscription(
     'polylabs.data.eslm.sanitization',
   );
 
-  if (status === 'connecting') {
+  const data = fixture ?? liveData;
+
+  if (!fixture && status === 'connecting') {
     return <div className="widget-loading">Connecting to sanitization stream...</div>;
   }
 
-  const entries: SanitizationEntry[] = data?.entries ?? [];
+  let entries: SanitizationEntry[] = data?.entries ?? [];
+
+  // Apply time range filter from event bus
+  const activeTimeRange = !filterReset ? timeRange : null;
+  if (activeTimeRange) {
+    entries = entries.filter(
+      (e) => e.timestamp >= activeTimeRange.from && e.timestamp <= activeTimeRange.to,
+    );
+  }
 
   const stageLabels = {
     pii_detect: 'PII Detection',
@@ -41,10 +62,21 @@ export default function EslmSanitizationLogWidget() {
     audit_record: 'Audit Record',
   };
 
+  const stageIcons = {
+    pii_detect: '\uD83D\uDD0D',
+    value_transform: '\uD83D\uDD12',
+    audit_record: '\uD83D\uDCDD',
+  };
+
   return (
     <div className="polydata-eslm-sanitization-log">
       <div className="log-header">
         <span className="count">{entries.length} sanitization actions</span>
+        {activeTimeRange && (
+          <span className="time-filter">
+            {new Date(activeTimeRange.from).toLocaleTimeString()} - {new Date(activeTimeRange.to).toLocaleTimeString()}
+          </span>
+        )}
       </div>
 
       <table className="sanitization-table">
@@ -61,14 +93,14 @@ export default function EslmSanitizationLogWidget() {
         </thead>
         <tbody>
           {entries.map((entry, i) => (
-            <tr key={i}>
+            <tr key={i} className={`stage-${entry.stage}`}>
               <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
-              <td>{stageLabels[entry.stage]}</td>
+              <td>{stageIcons[entry.stage]} {stageLabels[entry.stage]}</td>
               <td className="field-path">{entry.fieldPath}</td>
               <td>{entry.originalType}</td>
-              <td className="placeholder">{entry.placeholder}</td>
+              <td className="placeholder"><code>{entry.placeholder}</code></td>
               <td>{entry.regulation.join(', ')}</td>
-              <td className="witness-hash">{entry.witnessHash.slice(0, 12)}...</td>
+              <td className="witness-hash"><code>{entry.witnessHash.slice(0, 12)}...</code></td>
             </tr>
           ))}
         </tbody>

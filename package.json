@@ -12,13 +12,23 @@
     "packages/*"
   ],
   "scripts": {
+    "build": "npm run codegen && npm run build:circuits && npm run build:console",
     "build:circuits": "estream-dev build-wasm-client --enforce-budget",
     "build:console": "cd apps/console && npm run build",
     "build:desktop": "cd apps/desktop && npm run build",
     "package:escd": "estream-dev package-escd",
+    "codegen": "estream generate typescript --circuits circuits/ --output packages/sdk/src/generated/",
+    "codegen:watch": "estream generate typescript --circuits circuits/ --output packages/sdk/src/generated/ --watch",
+    "codegen:schema": "estream generate json-schema --circuits circuits/ --output .vscode/schemas/",
+    "scaffold:widget": "estream scaffold widget --template polydata --output apps/console/src/widgets/",
     "test": "npm run test:circuits && npm run test:widgets",
     "test:circuits": "estream-dev test --circuits circuits/",
-    "test:widgets": "cd apps/console && npm test"
+    "test:widgets": "cd apps/console && npm test",
+    "test:integration": "estream-dev test --integration --fixtures apps/console/src/widgets/demo-fixtures.ts",
+    "lint": "tsc --noEmit && eslint .",
+    "demo": "cd apps/console && npm run dev -- --open '?demo=true'",
+    "db:migrate": "estream-dev eslite migrate --migrations packages/sdk/src/eslite/migrations.ts",
+    "db:migrate:status": "estream-dev eslite migrate --status"
   },
   "dependencies": {
     "@estream/sdk-browser": "^0.8.1",
@@ -29,7 +39,10 @@
     "estream-dev": "^0.8.1",
     "typescript": "^5.4.0",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "react-dom": "^18.3.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
