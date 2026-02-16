@@ -1,0 +1,58 @@
+escir: "0.8.1"
+name: poly-data-metering
+version: "1.0.0"
+lex: polylabs.data.metering
+target: lattice
+
+description: |
+  Server-side 8-dimension metering circuit. Tracks resource usage across
+  all Poly Data operations: uploads, downloads, scatter storage, shares,
+  search, and poly-git operations.
+
+emissions:
+  - name: metering_telemetry
+    path: "lex://estream/apps/polylabs.data/telemetry"
+    annotations:
+      - "@streamsight_filter: baseline"
+      - "@streamsight_sensitivity: 2.0"
+
+stream:
+  - topic: "polylabs.data.metering.{user_id}"
+    pattern: scatter
+    retention: permanent
+    hash_chain: true
+
+dimensions:
+  - symbol: E
+    name: Energy
+    desc: "Compute cost (encrypt, chunk, erasure code)"
+  - symbol: H
+    name: Hardware
+    desc: "FPGA cycles (scatter routing, witness)"
+  - symbol: B
+    name: Bandwidth
+    desc: "Bytes transmitted (upload, download, scatter)"
+  - symbol: S
+    name: Storage
+    desc: "Shard storage (size × n shards × TTL)"
+  - symbol: O
+    name: Operations
+    desc: "Operation count (uploads, downloads, shares)"
+  - symbol: P
+    name: Priority
+    desc: "Priority level (0-255)"
+  - symbol: C
+    name: Creation
+    desc: "One-time creation cost"
+  - symbol: M
+    name: Memory
+    desc: "ESLite memory footprint"
+
+operations:
+  upload:    [B, S, O, E]
+  download:  [B, O]
+  scatter:   [S, B, H]
+  share:     [O]
+  search:    [O, M]
+  git_push:  [B, S, O]
+  git_clone: [B, O]

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.escd
+target/
+*.wasm
+*.wasm.sig
+.env
+*.sk.pem

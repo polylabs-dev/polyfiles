@@ -1,0 +1,64 @@
+escir: "0.8.1"
+name: poly-data-share
+version: "1.0.0"
+lex: polylabs.data.share
+target: lattice
+
+description: |
+  Server-side sharing circuit. Manages ACL-based folder sharing via SPARK
+  DIDs and ephemeral link file sharing via the eStream Ephemeral Links
+  pattern. Validates signatures, enforces classification-based permissions,
+  and manages share lifecycle.
+
+emissions:
+  - name: share_telemetry
+    path: "lex://estream/apps/polylabs.data/telemetry"
+    annotations:
+      - "@streamsight_filter: baseline"
+      - "@streamsight_sensitivity: 2.0"
+
+stream:
+  - topic: "polylabs.data.{user_id}.share.acl"
+    pattern: scatter
+    retention: permanent
+    hash_chain: true
+    signature_required: true
+
+  - topic: "polylabs.data.{recipient_id}.share.incoming"
+    pattern: scatter
+    retention: policy_based
+    signature_required: true
+
+  - topic: "polylabs.data.{user_id}.share.ephemeral"
+    pattern: request_reply
+    retention: ephemeral
+    signature_required: true
+
+fsm:
+  initial_state: pending
+  states:
+    pending:
+      transitions:
+        - event: acl_signed
+          target: validating
+    validating:
+      transitions:
+        - event: signature_valid
+          target: active
+        - event: signature_invalid
+          target: rejected
+    active:
+      transitions:
+        - event: expired
+          target: revoked
+        - event: owner_revoked
+          target: revoked
+    revoked:
+      transitions: []
+    rejected:
+      transitions: []
+
+telemetry:
+  counters:
+    - "polydata.shares_total"
+    - "polydata.ephemeral.created_total"

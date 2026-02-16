@@ -1,0 +1,92 @@
+escir: "0.8.1"
+name: poly-data-eslm-classify
+version: "1.0.0"
+lex: polylabs.data.eslm.classify
+target: wasm-client
+
+description: |
+  ESLM-powered auto-classification circuit. Analyzes file content samples
+  client-side to suggest classification tags with confidence scores. Content
+  never leaves the device. Human-in-the-loop review for low-confidence
+  suggestions feeds back into ESLM training at 2-3x weight.
+
+  All content passes through 3-stage sanitization before any telemetry:
+  1. PII Detection (slm-sanitize-pii)
+  2. Value Transform (slm-sanitize-transform)
+  3. Audit Record (slm-sanitize-audit)
+
+inputs:
+  - id: file_content_sample
+    desc: "First 4KB of file content (never leaves client WASM)"
+    max_size: 4096
+
+outputs:
+  - id: suggested_classification
+    desc: "Suggested classification tag with confidence score"
+    path: "lex://estream/apps/polylabs.data/eslm/classification"
+
+emissions:
+  - name: eslm_classify_telemetry
+    path: "lex://estream/apps/polylabs.data/telemetry"
+    annotations:
+      - "@streamsight_filter: baseline"
+      - "@streamsight_sensitivity: 2.5"
+      - "@streamsight_warmup: 500"
+
+  - name: eslm_sanitization_audit
+    path: "lex://estream/apps/polylabs.data/eslm/sanitization"
+    annotations:
+      - "@streamsight_filter: baseline"
+
+exports:
+  - fn: classify_content
+    desc: "Analyze content sample, return suggested classification + confidence"
+    params:
+      - name: content_sample
+        type: "bytes"
+      - name: file_extension
+        type: "string"
+      - name: file_path
+        type: "string"
+    returns: "ClassificationSuggestion { tag: Classification, confidence: f32, alternatives: Vec<(Classification, f32)> }"
+
+  - fn: classify_filename
+    desc: "Classify based on filename patterns and path context"
+    params:
+      - name: filename
+        type: "string"
+      - name: path
+        type: "string"
+    returns: "ClassificationSuggestion"
+
+  - fn: submit_human_feedback
+    desc: "Submit human review feedback for ESLM training"
+    params:
+      - name: sample_hash
+        type: "[u8; 32]"
+      - name: rating
+        type: "u8"
+      - name: correction
+        type: "Option<Classification>"
+      - name: reviewer_hash
+        type: "[u8; 32]"
+    returns: "void"
+
+confidence_thresholds:
+  auto_apply: 0.8
+  suggest_with_confirm: 0.5
+  require_manual: 0.0
+
+sanitization:
+  pipeline:
+    - stage: slm-sanitize-pii
+      desc: "Named entities, SSNs, emails, phones → [NAME_1], [SSN_1]"
+    - stage: slm-sanitize-transform
+      desc: "Currency, dates → [CURRENCY:USD:4DIGIT], [DATE:RECENT]"
+    - stage: slm-sanitize-audit
+      desc: "ESF field-level audit, PoVC witness, reversibility proof"
+  compliance:
+    - HIPAA
+    - PCI-DSS
+    - GDPR
+    - SOC2

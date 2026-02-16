@@ -1,0 +1,61 @@
+escir: "0.8.1"
+name: poly-data-manifest
+version: "1.0.0"
+lex: polylabs.data.manifest
+target: wasm-client
+
+description: |
+  Client-side manifest circuit. Constructs file manifests containing chunk
+  hashes, shard maps, classification, and wrapped keys. Signs manifests with
+  SPARK-derived ML-DSA-87 key. Verifies manifest signatures on download.
+
+emissions:
+  - name: manifest_telemetry
+    path: "lex://estream/apps/polylabs.data/telemetry"
+    annotations:
+      - "@streamsight_filter: baseline"
+      - "@streamsight_sensitivity: 2.0"
+      - "@streamsight_warmup: 1000"
+
+exports:
+  - fn: build_manifest
+    desc: "Construct manifest: chunk hashes, shard map, classification, wrapped key"
+    params:
+      - name: file_id
+        type: "FileId"
+      - name: chunk_hashes
+        type: "Vec<[u8; 32]>"
+      - name: shard_map
+        type: "ShardMap"
+      - name: classification
+        type: "Classification"
+      - name: wrapped_file_key
+        type: "WrappedFileKey"
+    returns: "Manifest"
+
+  - fn: sign_manifest
+    desc: "Sign manifest with SPARK-derived ML-DSA-87 key"
+    params:
+      - name: manifest
+        type: "Manifest"
+      - name: spark_signing_key
+        type: "MlDsa87PrivateKey"
+    returns: "SignedManifest"
+
+  - fn: verify_manifest
+    desc: "Verify manifest ML-DSA-87 signature"
+    params:
+      - name: signed_manifest
+        type: "SignedManifest"
+      - name: spark_verify_key
+        type: "MlDsa87PublicKey"
+    returns: "bool"
+
+  - fn: build_version_entry
+    desc: "Construct version history entry for manifest"
+    params:
+      - name: signed_manifest
+        type: "SignedManifest"
+      - name: parent_version
+        type: "Option<VersionHash>"
+    returns: "VersionEntry"

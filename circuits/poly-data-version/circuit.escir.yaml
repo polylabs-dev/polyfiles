@@ -1,0 +1,24 @@
+escir: "0.8.1"
+name: poly-data-version
+version: "1.0.0"
+lex: polylabs.data.version
+target: lattice
+
+description: |
+  Server-side version history circuit. Maintains hash-chained version
+  history for files, storing signed manifests with parent references.
+  Supports version rollback and diff operations.
+
+emissions:
+  - name: version_telemetry
+    path: "lex://estream/apps/polylabs.data/telemetry"
+    annotations:
+      - "@streamsight_filter: baseline"
+      - "@streamsight_sensitivity: 2.0"
+
+stream:
+  - topic: "polylabs.data.{user_id}.version.{file_id}"
+    pattern: scatter
+    retention: policy_based
+    hash_chain: true
+    signature_required: true
