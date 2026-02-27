@@ -1,10 +1,10 @@
-# Poly Data
+# Poly Files
 
-Post-quantum encrypted, scatter-distributed file storage and version control built on eStream v0.8.1.
+Scatter-distributed encrypted storage and version control built on eStream v0.8.1.
 
 ## Overview
 
-Poly Data is a secure document store where every file is PQ-encrypted on-device, erasure-coded, and scatter-distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention. Includes `poly-git` for scatter-distributed version control.
+Poly Files is a scatter-distributed encrypted storage platform where every file is PQ-encrypted on-device, erasure-coded, and distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention. Includes `poly-git` for scatter-distributed version control.
 
 ## Architecture
 
@@ -63,3 +63,21 @@ All communication uses the eStream Wire Protocol. No REST/HTTP endpoints.
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering
 - L2 multi-token payments
+
+## Developer Language Story (v0.9.1)
+
+eStream supports **7 languages** at full parity: Rust (native), Python (PyO3), TypeScript (WASM), Go (CGo), C++ (FFI), Swift (C bridging), and FastLang (native).
+
+### External Messaging
+
+- Lead with **"7 supported languages"** — developers choose the language they already know
+- Position FastLang as **"the shortest path to silicon"** — the easiest way to design for eStream hardware
+- **ESCIR (eStream Circuit Intermediate Representation) is strictly internal** — never mention it in external-facing materials, docs, pitches, or marketing. It is an implementation detail of the compiler
+- Swift (not Solidity) is the 7th language
+
+### Internal Development
+
+- **FastLang first**: all new circuits and features are authored in FastLang (.fl) first
+- **Six-language parity**: every FastLang feature must have equivalent API surface in Rust, Python, TypeScript, Go, C++, and Swift. Do not ship a FastLang-only feature
+- Implementation types: FastLang (.fl), Hybrid (FastLang + Rust/RTL), Pure Rust, Pure RTL, Platform (tooling)
+- ESCIR operations power the compiler pipeline but are invisible to users
