@@ -1,0 +1,324 @@
+// Poly Files Metering — 8-dimension resource metering for file operations
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/metering
+//     └── sub_lex user fan_in  ← per-user metering; aggregates fan up
+//
+// Maps every Poly Files operation to the 8 standard PolyKit metering
+// dimensions (E/H/B/S/O/P/C/M). Each operation activates a specific
+// subset of dimensions based on resource consumption profile:
+//
+//   upload   → [B, S, O, E]   scatter  → [S, B, H]
+//   download → [B, O]         share    → [O]
+//   search   → [O, M]         git_push → [B, S, O]
+//   git_clone → [B, O]
+
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+
+type UserId = bytes(16)
+type FileId = bytes(32)
+
+type OperationType = enum {
+    Upload,
+    Download,
+    Scatter,
+    Share,
+    Search,
+    GitPush,
+    GitClone,
+}
+
+type UploadMetrics = struct {
+    file_size: u64,
+    chunk_count: u32,
+    encryption_cycles: u64,
+    erasure_coding_cycles: u64,
+}
+
+type DownloadMetrics = struct {
+    file_size: u64,
+    shard_count: u32,
+    reassembly_cycles: u64,
+}
+
+type ScatterMetrics = struct {
+    shard_count: u32,
+    total_shard_bytes: u64,
+    node_count: u32,
+    vrf_hashes: u32,
+    fpga_cycles: u64,
+}
+
+type QuotaStatus = struct {
+    user_id: UserId,
+    current: polykit_metering::DimensionValues,
+    limits: polykit_metering::DimensionValues,
+    violations: [polykit_metering::MeteringDimension; 8],
+    within_quota: bool,
+}
+
+type UsageSummary = struct {
+    user_id: UserId,
+    period_start_ms: u64,
+    period_end_ms: u64,
+    totals: polykit_metering::DimensionValues,
+    operation_counts: OperationCounts,
+}
+
+type OperationCounts = struct {
+    uploads: u64,
+    downloads: u64,
+    scatters: u64,
+    shares: u64,
+    searches: u64,
+    git_pushes: u64,
+    git_clones: u64,
+}
+
+stream metering_events: event<polykit_metering::MeteringRecord>
+    | throttle 2000/s burst 5000
+    | topic "polylabs.files.metering.{user_id}"
+    | retention permanent
+    | hash_chain true
+
+// --- Meter an upload operation: [B, S, O, E] ---
+circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_metering::MeteringRecord
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/metering {
+        sub_lex user fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [upload_meters, bandwidth_metered, storage_metered]
+    monitor "upload_metering_latency" { metering_time_ms < 5 }
+    invariant "positive_file_size" { metrics.file_size > 0 }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let bandwidth = metrics.file_size
+    let storage = metrics.file_size * u64(metrics.chunk_count)
+    let energy = metrics.encryption_cycles + metrics.erasure_coding_cycles
+
+    let dims = polykit_metering::DimensionValues {
+        executions: energy,
+        hashes: 0,
+        bandwidth: bandwidth,
+        storage: storage,
+        observables: 1,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    let record = polykit_metering::record_usage(user_id, "upload", dims)
+
+    eslite_insert("metering_upload", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
+    emit(metering_events, record)
+    record
+}
+
+// --- Meter a download operation: [B, O] ---
+circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_metering::MeteringRecord
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/metering {
+        sub_lex user fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [download_meters, bandwidth_metered]
+    monitor "download_metering_latency" { metering_time_ms < 5 }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let bandwidth = metrics.file_size + u64(metrics.shard_count) * 64
+
+    let dims = polykit_metering::DimensionValues {
+        executions: 0,
+        hashes: 0,
+        bandwidth: bandwidth,
+        storage: 0,
+        observables: 1,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    let record = polykit_metering::record_usage(user_id, "download", dims)
+    eslite_insert("metering_download", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
+    emit(metering_events, record)
+    record
+}
+
+// --- Meter a scatter operation: [S, B, H] ---
+circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_metering::MeteringRecord
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/metering {
+        sub_lex user fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [scatter_meters, fpga_cycles_metered, storage_metered]
+    monitor "scatter_metering_latency" { metering_time_ms < 5 }
+    invariant "shard_count_positive" { metrics.shard_count > 0 }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let storage = metrics.total_shard_bytes
+    let bandwidth = metrics.total_shard_bytes + u64(metrics.node_count) * 256
+    let hardware = metrics.fpga_cycles + u64(metrics.vrf_hashes) * 1024
+
+    let dims = polykit_metering::DimensionValues {
+        executions: 0,
+        hashes: u64(metrics.vrf_hashes),
+        bandwidth: bandwidth,
+        storage: storage,
+        observables: 0,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    let record = polykit_metering::record_usage(user_id, "scatter", dims)
+    eslite_insert("metering_scatter", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
+    emit(metering_events, record)
+    record
+}
+
+// --- Check if user is within quota for all dimensions ---
+circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> QuotaStatus
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/metering
+    observe metrics: [quota_checks, quota_violations, quota_ok]
+    monitor "quota_violation_rate" { quota_violations / quota_checks < 0.05 }
+    invariant "tier_limits_positive" { all_dims_positive(tier.limits) }
+    wasm_abi [eslite_query]
+{
+    let current = polykit_metering::get_usage_summary(user_id)
+    let violations = polykit_metering::check_limits(current, tier)
+
+    let has_violation = false
+    for v in violations {
+        if v != null { has_violation = true }
+    }
+
+    QuotaStatus {
+        user_id: user_id,
+        current: current,
+        limits: tier.limits,
+        violations: violations,
+        within_quota: !has_violation,
+    }
+}
+
+// --- Get usage summary for a billing period ---
+circuit get_usage(user_id: UserId, period_start_ms: u64, period_end_ms: u64) -> UsageSummary
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/metering
+    observe metrics: [usage_queries, usage_query_latency_ms]
+    monitor "usage_query_latency" { usage_query_latency_ms < 100 }
+    wasm_abi [eslite_query]
+{
+    let totals = polykit_metering::get_usage_summary(user_id)
+
+    let uploads = eslite_query("metering_upload_count", user_id, period_start_ms, period_end_ms)
+    let downloads = eslite_query("metering_download_count", user_id, period_start_ms, period_end_ms)
+    let scatters = eslite_query("metering_scatter_count", user_id, period_start_ms, period_end_ms)
+    let shares = eslite_query("metering_share_count", user_id, period_start_ms, period_end_ms)
+    let searches = eslite_query("metering_search_count", user_id, period_start_ms, period_end_ms)
+    let git_pushes = eslite_query("metering_git_push_count", user_id, period_start_ms, period_end_ms)
+    let git_clones = eslite_query("metering_git_clone_count", user_id, period_start_ms, period_end_ms)
+
+    let counts = OperationCounts {
+        uploads: uploads,
+        downloads: downloads,
+        scatters: scatters,
+        shares: shares,
+        searches: searches,
+        git_pushes: git_pushes,
+        git_clones: git_clones,
+    }
+
+    UsageSummary {
+        user_id: user_id,
+        period_start_ms: period_start_ms,
+        period_end_ms: period_end_ms,
+        totals: totals,
+        operation_counts: counts,
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "meter_upload_basic" {
+    input {
+        user_id: bytes(16){0x01}
+        metrics: UploadMetrics {
+            file_size: 1048576,
+            chunk_count: 1,
+            encryption_cycles: 50000,
+            erasure_coding_cycles: 30000,
+        }
+    }
+    assert {
+        result.user_id == bytes(16){0x01}
+        result.dimensions.bandwidth == 1048576
+        result.dimensions.storage == 1048576
+        result.dimensions.executions == 80000
+        result.dimensions.observables == 1
+    }
+}
+
+test golden "meter_download_basic" {
+    input {
+        user_id: bytes(16){0x02}
+        metrics: DownloadMetrics {
+            file_size: 2097152,
+            shard_count: 5,
+            reassembly_cycles: 10000,
+        }
+    }
+    assert {
+        result.dimensions.bandwidth == 2097152 + 320
+        result.dimensions.observables == 1
+        result.dimensions.storage == 0
+    }
+}
+
+test golden "meter_scatter_basic" {
+    input {
+        user_id: bytes(16){0x03}
+        metrics: ScatterMetrics {
+            shard_count: 5,
+            total_shard_bytes: 524288,
+            node_count: 3,
+            vrf_hashes: 5,
+            fpga_cycles: 100000,
+        }
+    }
+    assert {
+        result.dimensions.storage == 524288
+        result.dimensions.hashes == 5
+        result.dimensions.bandwidth == 524288 + 768
+    }
+}
+
+test golden "check_quota_within_limits" {
+    input {
+        user_id: bytes(16){0x04}
+        tier: {
+            limits: {
+                executions: 10000000,
+                hashes: 100000,
+                bandwidth: 107374182400,
+                storage: 107374182400,
+                observables: 1000000,
+                proofs: 10000,
+                circuits: 100000,
+                mpc_sessions: 1000,
+            }
+        }
+    }
+    assert {
+        result.within_quota == true
+        result.user_id == bytes(16){0x04}
+    }
+}

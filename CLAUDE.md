@@ -1,10 +1,12 @@
 # Poly Files
 
-Scatter-distributed encrypted storage and version control built on eStream v0.8.1.
+Scatter-distributed encrypted storage built on eStream v0.9.1.
 
 ## Overview
 
-Poly Files is a scatter-distributed encrypted storage platform where every file is PQ-encrypted on-device, erasure-coded, and distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention. Includes `poly-git` for scatter-distributed version control.
+Poly Files is a scatter-distributed encrypted storage platform where every file is PQ-encrypted on-device, erasure-coded, and distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention.
+
+> **Note**: Git/version-control functionality has been split into a separate product: **Poly Git** (`polygit/`). Poly Files focuses on file storage, collaboration, and enterprise document management.
 
 ## Architecture
 
@@ -14,8 +16,6 @@ Client (Tauri/Mobile)
     +-- SPARK Auth (ML-DSA-87 biometric)
     |
     +-- File Manager (browse, upload, download, share)
-    |
-    +-- poly-git (git remote helper)
     |
     v
 eStream Wire Protocol (QUIC/UDP)
@@ -37,8 +37,7 @@ Scatter Storage (k-of-n across providers/jurisdictions)
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | Storage Router | circuits/ | ESCIR circuit for file routing, classification, scatter |
-| poly-git | crates/poly-git/ | Git remote helper for scatter-distributed repos |
-| Core SDK | crates/poly-data-core/ | Rust core for encrypt/decrypt, chunking, classification |
+| Core SDK | crates/poly-files-core/ | Rust core for encrypt/decrypt, chunking, classification |
 | Desktop App | apps/desktop/ | Tauri-based file manager |
 | Mobile App | apps/mobile/ | React Native with Rust FFI |
 
@@ -58,7 +57,7 @@ All communication uses the eStream Wire Protocol. No REST/HTTP endpoints.
 
 ## Platform
 
-- eStream v0.8.1
+- eStream v0.9.1
 - ESCIR SmartCircuits
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering

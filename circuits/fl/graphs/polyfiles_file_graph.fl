@@ -1,0 +1,611 @@
+// Poly Files File Registry Graph — typed graph for the file system
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files
+//     └── sub_lex file fan_in  ← per-file metadata; aggregates fan up
+//
+// Models the file system as a typed graph. Files and folders are nodes;
+// containment and ownership are edges. Overlays track classification,
+// scatter health, version count, and shard state without mutating the
+// base graph. Stratum storage binds each node type to graph storage
+// under lex governance. Cortex policies control field-level obfuscation
+// and anomaly detection across the file registry.
+
+import polykit_identity from "../../../polykit/circuits/fl/polykit_identity.fl"
+import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Stratum Data Declarations ──────────────────────────────────────
+
+data FileNode : app v1 {
+    file_id: bytes(32),
+    owner_id: bytes(16),
+    name: string,
+    mime_type: string,
+    size_bytes: u64,
+    content_hash: bytes(32),
+    manifest_hash: bytes(32),
+    classification: u8,
+    shard_count: u16,
+    version_count: u32,
+    created_ms: u64,
+    updated_ms: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data FolderNode : app v1 {
+    folder_id: bytes(32),
+    owner_id: bytes(16),
+    name: string,
+    classification: u8,
+    child_count: u32,
+    total_size: u64,
+    created_ms: u64,
+    updated_ms: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+    }
+
+// ── Edge Types ─────────────────────────────────────────────────────
+
+type ContainsEdge = struct {
+    parent_id: bytes(32),
+    child_id: bytes(32),
+    child_type: ChildType,
+    added_ms: u64,
+}
+
+type OwnedByEdge = struct {
+    node_id: bytes(32),
+    owner_id: bytes(16),
+    owner_since_ms: u64,
+}
+
+type ChildType = enum {
+    File,
+    Folder,
+}
+
+// ── Auxiliary Types ────────────────────────────────────────────────
+
+type FileId = bytes(32)
+type FolderId = bytes(32)
+type UserId = bytes(16)
+
+type FolderListing = struct {
+    folder_id: FolderId,
+    files: [FileNode],
+    folders: [FolderNode],
+    total_count: u32,
+}
+
+type MoveResult = struct {
+    node_id: bytes(32),
+    old_parent: FolderId,
+    new_parent: FolderId,
+    moved_ms: u64,
+}
+
+// ── Graph Declaration ──────────────────────────────────────────────
+
+graph file_registry {
+    node FileNode {
+        key file_id
+    }
+    node FolderNode {
+        key folder_id
+    }
+
+    edge ContainsEdge {
+        from FolderNode via parent_id
+        to FileNode via child_id
+        cardinality one_to_many
+    }
+    edge ContainsEdge {
+        from FolderNode via parent_id
+        to FolderNode via child_id
+        cardinality one_to_many
+    }
+    edge OwnedByEdge {
+        from FileNode via node_id
+        to UserId via owner_id
+        cardinality many_to_one
+    }
+
+    overlay classification: u8 curate delta_curate
+    overlay scatter_health: u8 curate delta_curate
+    overlay offline_cached: bool curate delta_curate
+    overlay version_count: u32 bitmask delta_curate
+    overlay size_bytes: u64 bitmask delta_curate
+    overlay shard_count: u16 bitmask delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed file_anomaly_detection
+    ai_feed classification_suggestion
+
+    observe file_registry: [classification, scatter_health, size_bytes] threshold: {
+        anomaly_score 0.85
+        baseline_window 300
+    }
+
+    traverse children(folder: FolderNode) -> [FileNode | FolderNode] {
+        match (folder) -[ContainsEdge]-> (child)
+        return child
+    }
+
+    traverse ancestors(node: FileNode | FolderNode) -> [FolderNode] {
+        match (parent: FolderNode) -[ContainsEdge]-> (node)
+        recurse parent
+        return parent
+    }
+
+    reduce total_size(folder: FolderNode) -> u64 {
+        sum(children(folder).size_bytes)
+    }
+
+    reduce deep_file_count(folder: FolderNode) -> u32 {
+        count(children(folder) where type == FileNode)
+        + sum(children(folder) where type == FolderNode | deep_file_count)
+    }
+}
+
+series file_series: file_registry
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Event Streams ──────────────────────────────────────────────────
+
+stream file_events: event<FileNode>
+    | throttle 500/s burst 1000
+    | topic "polylabs.files.{owner_id}.file.{file_id}"
+    | retention policy_based
+    | hash_chain true
+
+// ── Circuits ───────────────────────────────────────────────────────
+
+circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), folder_id: FolderId, name: string, mime_type: string, content_hash: bytes(32), manifest_hash: bytes(32), classification: u8, size_bytes: u64, shard_count: u16) -> FileNode
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex file fan_in
+    }
+    meters [compute_cycles, storage]
+    observe metrics: [files_created, storage_bytes_added, classification_distribution]
+    monitor "file_creation_rate" { files_created > 0 }
+    invariant "owner_authenticated" { derived_id == owner_id }
+    invariant "classification_valid" { classification <= 4 }
+    invariant "name_non_empty" { len(name) > 0 }
+    wasm_abi [eslite_insert, eslite_query, stream_emit, now]
+{
+    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    if derived_id != owner_id { return error("identity_mismatch") }
+
+    let ts = now()
+    let file_id = sha3_256(
+        owner_id ++ folder_id ++ content_hash ++ u64_to_bytes(ts)
+    )
+
+    let folder = eslite_query("folders", folder_id)
+    if folder == null { return error("folder_not_found") }
+    if folder.owner_id != owner_id { return error("not_folder_owner") }
+
+    let node = FileNode {
+        file_id: file_id,
+        owner_id: owner_id,
+        name: name,
+        mime_type: mime_type,
+        size_bytes: size_bytes,
+        content_hash: content_hash,
+        manifest_hash: manifest_hash,
+        classification: classification,
+        shard_count: shard_count,
+        version_count: 1,
+        created_ms: ts,
+        updated_ms: ts,
+    }
+
+    eslite_insert("files", file_id, node)
+
+    let edge = ContainsEdge {
+        parent_id: folder_id,
+        child_id: file_id,
+        child_type: ChildType::File,
+        added_ms: ts,
+    }
+    eslite_insert("contains", folder_id ++ file_id, edge)
+
+    let own_edge = OwnedByEdge {
+        node_id: file_id,
+        owner_id: owner_id,
+        owner_since_ms: ts,
+    }
+    eslite_insert("owned_by", file_id, own_edge)
+
+    let updated_folder = { ...folder,
+        child_count: folder.child_count + 1,
+        total_size: folder.total_size + size_bytes,
+        updated_ms: ts,
+    }
+    eslite_insert("folders", folder_id, updated_folder)
+
+    let sig_payload = file_id ++ content_hash ++ manifest_hash
+    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+
+    emit(file_events, node)
+
+    polykit_metering::record_usage(owner_id, "file", {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: size_bytes, observables: 1, proofs: 0,
+        circuits: 1, mpc_sessions: 0,
+    })
+
+    node
+}
+
+circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: FolderId, name: string, classification: u8) -> FolderNode
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex file fan_in
+    }
+    meters [compute_cycles, storage]
+    observe metrics: [folders_created]
+    monitor "folder_creation_rate" { folders_created > 0 }
+    invariant "owner_authenticated" { derived_id == owner_id }
+    invariant "classification_valid" { classification <= 4 }
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    if derived_id != owner_id { return error("identity_mismatch") }
+
+    let ts = now()
+    let folder_id = sha3_256(owner_id ++ parent_id ++ name ++ u64_to_bytes(ts))
+
+    let effective_class = classification
+    if parent_id != bytes(32){0} {
+        let parent = eslite_query("folders", parent_id)
+        if parent == null { return error("parent_not_found") }
+        if parent.owner_id != owner_id { return error("not_folder_owner") }
+        if classification < parent.classification {
+            effective_class = parent.classification
+        }
+
+        let edge = ContainsEdge {
+            parent_id: parent_id,
+            child_id: folder_id,
+            child_type: ChildType::Folder,
+            added_ms: ts,
+        }
+        eslite_insert("contains", parent_id ++ folder_id, edge)
+
+        eslite_insert("folders", parent_id, { ...parent,
+            child_count: parent.child_count + 1,
+            updated_ms: ts,
+        })
+    }
+
+    let folder = FolderNode {
+        folder_id: folder_id,
+        owner_id: owner_id,
+        name: name,
+        classification: effective_class,
+        child_count: 0,
+        total_size: 0,
+        created_ms: ts,
+        updated_ms: ts,
+    }
+
+    eslite_insert("folders", folder_id, folder)
+
+    polykit_metering::record_usage(owner_id, "folder", {
+        executions: 1, hashes: 0, bandwidth: 0, storage: 0,
+        observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    folder
+}
+
+circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_parent: FolderId, new_parent: FolderId) -> MoveResult
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex file fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [files_moved]
+    invariant "owner_authenticated" { derived_id == owner_id }
+    invariant "different_parents" { old_parent != new_parent }
+    wasm_abi [eslite_insert, eslite_query, eslite_delete, now]
+{
+    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    if derived_id != owner_id { return error("identity_mismatch") }
+
+    let file = eslite_query("files", file_id)
+    if file == null { return error("file_not_found") }
+    if file.owner_id != owner_id { return error("not_file_owner") }
+
+    let src = eslite_query("folders", old_parent)
+    let dst = eslite_query("folders", new_parent)
+    if src == null || dst == null { return error("folder_not_found") }
+    if dst.owner_id != owner_id { return error("not_dest_owner") }
+
+    if file.classification > dst.classification {
+        return error("classification_downgrade_blocked")
+    }
+
+    let ts = now()
+    eslite_delete("contains", old_parent ++ file_id)
+
+    let edge = ContainsEdge {
+        parent_id: new_parent,
+        child_id: file_id,
+        child_type: ChildType::File,
+        added_ms: ts,
+    }
+    eslite_insert("contains", new_parent ++ file_id, edge)
+
+    eslite_insert("folders", old_parent, { ...src,
+        child_count: src.child_count - 1,
+        total_size: src.total_size - file.size_bytes,
+        updated_ms: ts,
+    })
+    eslite_insert("folders", new_parent, { ...dst,
+        child_count: dst.child_count + 1,
+        total_size: dst.total_size + file.size_bytes,
+        updated_ms: ts,
+    })
+
+    eslite_insert("files", file_id, { ...file, updated_ms: ts })
+
+    MoveResult {
+        node_id: file_id,
+        old_parent: old_parent,
+        new_parent: new_parent,
+        moved_ms: ts,
+    }
+}
+
+circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), file_id: FileId, parent_id: FolderId) -> bool
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex file fan_in
+    }
+    meters [compute_cycles, storage]
+    observe metrics: [files_deleted, storage_bytes_freed]
+    invariant "owner_authenticated" { derived_id == owner_id }
+    wasm_abi [eslite_query, eslite_delete, eslite_insert, now]
+{
+    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    if derived_id != owner_id { return error("identity_mismatch") }
+
+    let file = eslite_query("files", file_id)
+    if file == null { return error("file_not_found") }
+    if file.owner_id != owner_id { return error("not_file_owner") }
+
+    let sig_payload = file_id ++ bytes(1){0xFF}
+    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+
+    eslite_delete("files", file_id)
+    eslite_delete("contains", parent_id ++ file_id)
+    eslite_delete("owned_by", file_id)
+
+    let folder = eslite_query("folders", parent_id)
+    if folder != null {
+        let ts = now()
+        eslite_insert("folders", parent_id, { ...folder,
+            child_count: folder.child_count - 1,
+            total_size: folder.total_size - file.size_bytes,
+            updated_ms: ts,
+        })
+    }
+
+    polykit_metering::record_usage(owner_id, "file", {
+        executions: 1, hashes: 0, bandwidth: 0,
+        storage: 0 - file.size_bytes, observables: 1, proofs: 0,
+        circuits: 1, mpc_sessions: 0,
+    })
+
+    true
+}
+
+circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), file_id: FileId, new_classification: u8) -> FileNode
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex file fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [reclassifications, classification_upgrades, classification_downgrades]
+    monitor "reclassification_anomaly" { classification_downgrades / reclassifications < 0.1 }
+    invariant "owner_authenticated" { derived_id == owner_id }
+    invariant "classification_valid" { new_classification <= 4 }
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    if derived_id != owner_id { return error("identity_mismatch") }
+
+    let file = eslite_query("files", file_id)
+    if file == null { return error("file_not_found") }
+    if file.owner_id != owner_id { return error("not_file_owner") }
+
+    let sig_payload = file_id ++ bytes(1){new_classification}
+    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+
+    let ts = now()
+    let updated = { ...file,
+        classification: new_classification,
+        updated_ms: ts,
+    }
+    eslite_insert("files", file_id, updated)
+
+    polykit_metering::record_usage(owner_id, "classify", {
+        executions: 1, hashes: 0, bandwidth: 0, storage: 0,
+        observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    updated
+}
+
+circuit list_folder(owner_id: UserId, folder_id: FolderId, offset: u32, limit: u32) -> FolderListing
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files
+    observe metrics: [folder_listings, results_returned]
+    monitor "list_latency" { list_time_ms < 100 }
+    invariant "limit_bounded" { limit <= 1000 }
+    wasm_abi [eslite_query]
+{
+    let folder = eslite_query("folders", folder_id)
+    if folder == null { return error("folder_not_found") }
+    if folder.owner_id != owner_id { return error("not_folder_owner") }
+
+    let edges = eslite_query("contains", folder_id, offset, limit)
+    let files = []
+    let folders = []
+
+    for edge in edges {
+        match edge.child_type {
+            ChildType::File => {
+                let f = eslite_query("files", edge.child_id)
+                if f != null { files = append(files, f) }
+            },
+            ChildType::Folder => {
+                let d = eslite_query("folders", edge.child_id)
+                if d != null { folders = append(folders, d) }
+            },
+        }
+    }
+
+    FolderListing {
+        folder_id: folder_id,
+        files: files,
+        folders: folders,
+        total_count: len(files) + len(folders),
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "create_file_in_folder" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let folder_id = sha3_256(bytes("root-folder"))
+        let content_hash = sha3_256(bytes("file content"))
+        let manifest_hash = sha3_256(bytes("manifest"))
+
+        let file = create_file(
+            owner_id, owner_pk, owner_sk,
+            folder_id, "document.pdf", "application/pdf",
+            content_hash, manifest_hash, 1, 1048576, 5,
+        )
+    }
+    assert {
+        file.file_id != zeroed(32)
+        file.owner_id == owner_id
+        file.name == "document.pdf"
+        file.mime_type == "application/pdf"
+        file.classification == 1
+        file.size_bytes == 1048576
+        file.shard_count == 5
+        file.version_count == 1
+    }
+}
+
+test golden "create_folder_inherits_classification" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let parent_id = sha3_256(bytes("parent-sensitive"))
+
+        let folder = create_folder(owner_id, owner_pk, parent_id, "sub-folder", 0)
+    }
+    assert {
+        folder.folder_id != zeroed(32)
+        folder.owner_id == owner_id
+        folder.name == "sub-folder"
+        folder.classification >= 0
+        folder.child_count == 0
+        folder.total_size == 0
+    }
+}
+
+test golden "move_file_between_folders" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("moveable-file"))
+        let old_parent = sha3_256(bytes("source-folder"))
+        let new_parent = sha3_256(bytes("dest-folder"))
+
+        let result = move_file(owner_id, pk, file_id, old_parent, new_parent)
+    }
+    assert {
+        result.node_id == sha3_256(bytes("moveable-file"))
+        result.old_parent == sha3_256(bytes("source-folder"))
+        result.new_parent == sha3_256(bytes("dest-folder"))
+        result.moved_ms > 0
+    }
+}
+
+test golden "list_folder_contents" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(pk)
+        let folder_id = sha3_256(bytes("listing-folder"))
+
+        let listing = list_folder(owner_id, folder_id, 0, 100)
+    }
+    assert {
+        listing.folder_id == sha3_256(bytes("listing-folder"))
+        listing.total_count >= 0
+    }
+}
+
+test golden "reclassify_file_upgrade" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("reclassify-file"))
+
+        let updated = reclassify(owner_id, pk, sk, file_id, 3)
+    }
+    assert {
+        updated.classification == 3
+        updated.file_id == sha3_256(bytes("reclassify-file"))
+    }
+}

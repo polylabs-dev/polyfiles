@@ -1,0 +1,329 @@
+// PolyFiles Classify — Classification assignment and scatter policy lookup
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/classify
+//   5-level classification: Public → Internal → Sensitive → Restricted → Sovereign
+//   Each level maps to a scatter policy (k-of-n erasure + jurisdiction count).
+//   Supports manual, inherited, ESLM auto, and .polyclassification file sources.
+//
+// Scatter policy table:
+//   Public:     k=2,  n=3,  jurisdictions=1
+//   Internal:   k=3,  n=5,  jurisdictions=2
+//   Sensitive:  k=5,  n=7,  jurisdictions=3
+//   Restricted: k=7,  n=9,  jurisdictions=3
+//   Sovereign:  k=9,  n=13, jurisdictions=5
+
+import polykit_metering
+import polykit_governance
+
+type Classification = enum {
+    Public,
+    Internal,
+    Sensitive,
+    Restricted,
+    Sovereign,
+}
+
+type ClassificationSource = enum {
+    Manual,
+    Inherited,
+    EslmAuto,
+    PolicyFile,
+}
+
+type ScatterPolicy = struct {
+    k: u8,
+    n: u8,
+    jurisdictions: u8,
+    min_providers: u8,
+    geo_diversity: bool,
+}
+
+type ClassificationRule = struct {
+    pattern: string,
+    classification: Classification,
+    source: ClassificationSource,
+    priority: u8,
+}
+
+type ClassificationPolicy = struct {
+    rules: list<ClassificationRule>,
+    default_classification: Classification,
+    enforce_minimum: bool,
+    minimum_level: Classification,
+}
+
+type ClassifyResult = struct {
+    classification: Classification,
+    source: ClassificationSource,
+    scatter_policy: ScatterPolicy,
+    confidence: f32,
+    rule_matched: string,
+}
+
+type ValidationResult = struct {
+    valid: bool,
+    reason: string,
+    required_level: Classification,
+    actual_level: Classification,
+}
+
+// --- Assign classification to a file ---
+circuit classify_file(
+    file_path: string,
+    parent_classification: option<Classification>,
+    policy: option<ClassificationPolicy>,
+    eslm_suggestion: option<Classification>,
+    eslm_confidence: f32,
+) -> ClassifyResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/classify
+    observe metrics: [classifications_assigned, classification_changes, source_distribution]
+    monitor "classification_latency" { classify_time_ms < 10 }
+    invariant "result_not_below_parent" {
+        parent_classification.is_none() || result.classification >= parent_classification.unwrap()
+    }
+    invariant "policy_minimum_enforced" {
+        policy.is_none() || !policy.unwrap().enforce_minimum || result.classification >= policy.unwrap().minimum_level
+    }
+    meters [compute_cycles, executions]
+{
+    let base_level = Classification::Public
+    let source = ClassificationSource::Manual
+    let rule_matched = "default"
+
+    let level = if policy.is_some() {
+        let matched = match_policy_rules(policy.unwrap().rules, file_path)
+        if matched.is_some() {
+            source = ClassificationSource::PolicyFile
+            rule_matched = matched.unwrap().pattern
+            matched.unwrap().classification
+        } else {
+            policy.unwrap().default_classification
+        }
+    } else {
+        base_level
+    }
+
+    let level = if parent_classification.is_some() {
+        let parent = parent_classification.unwrap()
+        if parent > level {
+            source = ClassificationSource::Inherited
+            rule_matched = "inherited_from_parent"
+            parent
+        } else {
+            level
+        }
+    } else {
+        level
+    }
+
+    let level = if eslm_suggestion.is_some() && eslm_confidence >= 0.8 {
+        let suggested = eslm_suggestion.unwrap()
+        if suggested > level {
+            source = ClassificationSource::EslmAuto
+            rule_matched = "eslm_auto_upgrade"
+            suggested
+        } else {
+            level
+        }
+    } else {
+        level
+    }
+
+    let scatter = lookup_scatter_table(level)
+    ClassifyResult {
+        classification: level,
+        source: source,
+        scatter_policy: scatter,
+        confidence: if source == ClassificationSource::EslmAuto { eslm_confidence } else { 1.0 },
+        rule_matched: rule_matched,
+    }
+}
+
+// --- Parse .polyclassification file ---
+circuit parse_polyclassification(content: string) -> list<ClassificationRule>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/classify
+    observe metrics: [polyclassification_parses, rules_parsed]
+    monitor "parse_errors" { parse_failures == 0 }
+    invariant "content_not_empty" { len(content) > 0 }
+    meters [compute_cycles]
+{
+    let lines = split_lines(content)
+    let rules = list_new()
+    let priority: u8 = 0
+    for line in lines {
+        let trimmed = trim(line)
+        if len(trimmed) == 0 || starts_with(trimmed, "#") {
+            continue
+        }
+        let parts = split_whitespace(trimmed)
+        assert(len(parts) >= 2, "invalid rule format: expected 'pattern classification'")
+        let pattern = parts[0]
+        let class_str = to_upper(parts[1])
+        let classification = match class_str {
+            "PUBLIC" => Classification::Public,
+            "INTERNAL" => Classification::Internal,
+            "SENSITIVE" => Classification::Sensitive,
+            "RESTRICTED" => Classification::Restricted,
+            "SOVEREIGN" => Classification::Sovereign,
+            _ => panic("unknown classification: " + class_str),
+        }
+        let rule = ClassificationRule {
+            pattern: pattern,
+            classification: classification,
+            source: ClassificationSource::PolicyFile,
+            priority: priority,
+        }
+        list_push(rules, rule)
+        priority = priority + 1
+    }
+    rules
+}
+
+// --- Look up scatter policy for a classification level ---
+circuit lookup_scatter_policy(classification: Classification) -> ScatterPolicy
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/classify
+    observe metrics: [scatter_lookups]
+    invariant "valid_k_n" { result.k < result.n }
+    invariant "jurisdiction_positive" { result.jurisdictions >= 1 }
+{
+    lookup_scatter_table(classification)
+}
+
+// --- Validate classification meets minimum policy requirements ---
+circuit validate_classification(
+    classification: Classification,
+    policy: ClassificationPolicy,
+) -> ValidationResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/classify
+    observe metrics: [classification_validations, validation_failures]
+    monitor "validation_rejections" { rejection_rate < 0.1 }
+    meters [compute_cycles]
+{
+    let valid = if policy.enforce_minimum {
+        classification >= policy.minimum_level
+    } else {
+        true
+    }
+    let reason = if valid {
+        "classification meets policy requirements"
+    } else {
+        "classification below minimum required level"
+    }
+    ValidationResult {
+        valid: valid,
+        reason: reason,
+        required_level: policy.minimum_level,
+        actual_level: classification,
+    }
+}
+
+// --- Internal: scatter policy lookup table ---
+circuit lookup_scatter_table(level: Classification) -> ScatterPolicy
+    profile poly_framework_standard
+{
+    match level {
+        Classification::Public => ScatterPolicy {
+            k: 2, n: 3, jurisdictions: 1, min_providers: 1, geo_diversity: false,
+        },
+        Classification::Internal => ScatterPolicy {
+            k: 3, n: 5, jurisdictions: 2, min_providers: 2, geo_diversity: false,
+        },
+        Classification::Sensitive => ScatterPolicy {
+            k: 5, n: 7, jurisdictions: 3, min_providers: 3, geo_diversity: true,
+        },
+        Classification::Restricted => ScatterPolicy {
+            k: 7, n: 9, jurisdictions: 3, min_providers: 4, geo_diversity: true,
+        },
+        Classification::Sovereign => ScatterPolicy {
+            k: 9, n: 13, jurisdictions: 5, min_providers: 5, geo_diversity: true,
+        },
+    }
+}
+
+// --- Internal: match file path against policy rules ---
+circuit match_policy_rules(rules: list<ClassificationRule>, file_path: string) -> option<ClassificationRule>
+    profile poly_framework_standard
+{
+    let best: option<ClassificationRule> = none
+    for rule in rules {
+        if glob_match(rule.pattern, file_path) {
+            if best.is_none() || rule.priority > best.unwrap().priority {
+                best = some(rule)
+            }
+        }
+    }
+    best
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "classify_public_file" {
+    input {
+        file_path: "/public/readme.txt"
+        parent_classification: none
+        policy: none
+        eslm_suggestion: none
+        eslm_confidence: 0.0
+    }
+    assert {
+        result.classification == Classification::Public
+        result.source == ClassificationSource::Manual
+        result.scatter_policy.k == 2
+        result.scatter_policy.n == 3
+        result.confidence == 1.0
+    }
+}
+
+test golden "classify_inherited_from_parent" {
+    input {
+        file_path: "/docs/notes.txt"
+        parent_classification: some(Classification::Sensitive)
+        policy: none
+        eslm_suggestion: none
+        eslm_confidence: 0.0
+    }
+    assert {
+        result.classification == Classification::Sensitive
+        result.source == ClassificationSource::Inherited
+        result.scatter_policy.k == 5
+        result.scatter_policy.n == 7
+        result.scatter_policy.jurisdictions == 3
+    }
+}
+
+test golden "classify_eslm_upgrade" {
+    input {
+        file_path: "/uploads/report.pdf"
+        parent_classification: some(Classification::Internal)
+        policy: none
+        eslm_suggestion: some(Classification::Restricted)
+        eslm_confidence: 0.9
+    }
+    assert {
+        result.classification == Classification::Restricted
+        result.source == ClassificationSource::EslmAuto
+        result.scatter_policy.k == 7
+        result.scatter_policy.n == 9
+        result.confidence == 0.9
+    }
+}
+
+test golden "parse_polyclassification_basic" {
+    input {
+        content: "*.key Restricted\n*.pdf Internal\n# comment\n*.pub Public"
+    }
+    assert {
+        len(result) == 3
+        result[0].pattern == "*.key"
+        result[0].classification == Classification::Restricted
+        result[1].pattern == "*.pdf"
+        result[1].classification == Classification::Internal
+        result[2].pattern == "*.pub"
+        result[2].classification == Classification::Public
+    }
+}

@@ -1,0 +1,646 @@
+// Poly Files Version DAG — Merkle-linked version history for files
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files
+//     └── sub_lex version fan_in  ← per-file version chain; proofs fan up
+//
+// Each version is an ML-DSA-87 signed node in a DAG. Parent edges form
+// the version history; multiple parents represent merges. Merkle proofs
+// allow any node to prove its ancestry without revealing the full DAG.
+// Stratum storage binds to merkle_csr for content integrity. Cortex
+// governs field visibility and triggers anomaly detection on writes.
+
+import polykit_identity from "../../../polykit/circuits/fl/polykit_identity.fl"
+import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Stratum Data Declarations ──────────────────────────────────────
+
+data VersionNode : app v1 {
+    version_id: bytes(32),
+    file_id: bytes(32),
+    author_id: bytes(16),
+    manifest_hash: bytes(32),
+    parent_ids: [bytes(32); 4],
+    parent_count: u32,
+    depth: u64,
+    merkle_root: bytes(32),
+    file_size: u64,
+    message: string,
+    signature: bytes(4627),
+    author_pk: bytes(2592),
+    created_ms: u64,
+}
+    store dag
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [author_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+// ── Edge & Auxiliary Types ─────────────────────────────────────────
+
+type VersionId = bytes(32)
+type FileId = bytes(32)
+type UserId = bytes(16)
+type ManifestHash = bytes(32)
+type MerkleRoot = bytes(32)
+type MerkleProof = bytes(1024)
+
+type ParentEdge = struct {
+    child_id: VersionId,
+    parent_id: VersionId,
+    edge_type: EdgeType,
+    merge_strategy: MergeStrategy,
+}
+
+type EdgeType = enum {
+    Linear,
+    MergePrimary,
+    MergeSecondary,
+}
+
+type MergeStrategy = enum {
+    TakeNewest,
+    TakeLargest,
+    ManualResolve,
+    AutoMerge,
+}
+
+type AncestorResult = struct {
+    version_id: VersionId,
+    ancestors: [VersionId],
+    depth: u64,
+    proof: MerkleProof,
+}
+
+type DescendantResult = struct {
+    version_id: VersionId,
+    descendants: [VersionId],
+    depth: u64,
+}
+
+type CommonAncestorResult = struct {
+    ancestor_id: VersionId,
+    depth_a: u64,
+    depth_b: u64,
+    proof_a: MerkleProof,
+    proof_b: MerkleProof,
+}
+
+type MergeCandidate = struct {
+    version_a: VersionId,
+    version_b: VersionId,
+    common_ancestor: VersionId,
+    strategy: MergeStrategy,
+    conflict_detected: bool,
+}
+
+type VersionProof = struct {
+    version_id: VersionId,
+    merkle_root: MerkleRoot,
+    proof_path: MerkleProof,
+    verified: bool,
+    author_verified: bool,
+}
+
+// ── DAG Declaration ────────────────────────────────────────────────
+
+dag version_history {
+    node VersionNode {
+        key version_id
+        signed_by author_pk using ML-DSA-87
+        merkle_root merkle_root
+    }
+    edge ParentEdge {
+        from child_id
+        to parent_id
+    }
+
+    enforce acyclic
+    sign ml_dsa_87
+
+    storage merkle_csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    attest povc {
+        witness threshold(2, 3)
+    }
+
+    overlay shard_health: u8 curate delta_curate
+    overlay download_count: u64 bitmask delta_curate
+    overlay branch_depth: u64 bitmask delta_curate
+
+    constraint "max_parents" { node.parent_count <= 4 }
+    constraint "signed_nodes" { all_nodes_signed(version_history) }
+
+    index by_file { key file_id, order depth desc }
+    index by_author { key author_id, order created_ms desc }
+
+    ai_feed version_anomaly_detection
+    ai_feed merge_conflict_prediction
+
+    observe version_history: [shard_health, download_count, branch_depth] threshold: {
+        anomaly_score 0.85
+        baseline_window 300
+    }
+
+    ancestors(version: VersionNode) -> [VersionNode] {
+        walk version -[ParentEdge]-> parent
+        recurse parent
+        collect parent
+    }
+
+    descendants(version: VersionNode) -> [VersionNode] {
+        walk child -[ParentEdge]-> version
+        recurse child
+        collect child
+    }
+
+    common_ancestor(a: VersionNode, b: VersionNode) -> VersionNode {
+        let a_set = ancestors(a)
+        let b_set = ancestors(b)
+        intersect(a_set, b_set) | min_by(depth)
+    }
+
+    match {
+        (base: VersionNode) <-[ParentEdge]- (a: VersionNode),
+        (base: VersionNode) <-[ParentEdge]- (b: VersionNode)
+        where a != b
+    } -> MergeCandidate
+}
+
+series version_series: version_history
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Event Streams ──────────────────────────────────────────────────
+
+stream version_events: event<VersionNode>
+    | throttle 500/s burst 1000
+    | topic "polylabs.files.{author_id}.version.{file_id}"
+    | retention policy_based
+    | hash_chain true
+
+// ── Circuits ───────────────────────────────────────────────────────
+
+circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592), author_sk: bytes(4896), manifest_hash: ManifestHash, parent_ids: [VersionId; 4], parent_count: u32, file_size: u64, message: string) -> VersionNode
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex version fan_in
+    }
+    meters [compute_cycles, storage]
+    observe metrics: [versions_created, dag_depth, merge_versions]
+    monitor "version_creation_rate" { versions_created > 0 }
+    invariant "author_authenticated" { author_derived == author_id }
+    invariant "parent_count_valid" { parent_count <= 4 }
+    invariant "manifest_non_empty" { len(manifest_hash) == 32 }
+    wasm_abi [eslite_insert, eslite_query, stream_emit, now]
+{
+    let author_derived = polykit_identity::derive_user_id(author_pk)
+    if author_derived != author_id { return error("author_identity_mismatch") }
+
+    let ts = now()
+    let version_id = sha3_256(
+        file_id ++ author_id ++ manifest_hash ++ u64_to_bytes(ts)
+    )
+
+    let depth = if parent_count == 0 {
+        0
+    } else {
+        let max_parent_depth = 0u64
+        for i in 0..parent_count {
+            let parent = eslite_query("versions", parent_ids[i])
+            if parent.depth > max_parent_depth {
+                max_parent_depth = parent.depth
+            }
+        }
+        max_parent_depth + 1
+    }
+
+    let merkle_leaves = [version_id, manifest_hash, author_id]
+    for i in 0..parent_count {
+        merkle_leaves = append(merkle_leaves, parent_ids[i])
+    }
+    let merkle_root = merkle_tree_root(merkle_leaves)
+
+    let sign_payload = version_id ++ file_id ++ manifest_hash ++ merkle_root ++ u64_to_bytes(ts)
+    let signature = polykit_identity::sign_message(author_sk, sign_payload)
+
+    let node = VersionNode {
+        version_id: version_id,
+        file_id: file_id,
+        author_id: author_id,
+        manifest_hash: manifest_hash,
+        parent_ids: parent_ids,
+        parent_count: parent_count,
+        depth: depth,
+        merkle_root: merkle_root,
+        file_size: file_size,
+        message: message,
+        signature: signature,
+        author_pk: author_pk,
+        created_ms: ts,
+    }
+
+    eslite_insert("versions", version_id, node)
+    eslite_insert("version_by_file", file_id ++ u64_to_bytes(depth), version_id)
+
+    for i in 0..parent_count {
+        let edge_type = if i == 0 && parent_count > 1 {
+            EdgeType::MergePrimary
+        } else if i > 0 {
+            EdgeType::MergeSecondary
+        } else {
+            EdgeType::Linear
+        }
+        let edge = ParentEdge {
+            child_id: version_id,
+            parent_id: parent_ids[i],
+            edge_type: edge_type,
+            merge_strategy: MergeStrategy::TakeNewest,
+        }
+        eslite_insert("parent_edges", version_id ++ parent_ids[i], edge)
+    }
+
+    emit(version_events, node)
+
+    polykit_metering::record_usage(author_id, "version", {
+        executions: 1, hashes: u64(parent_count) + 2, bandwidth: 0,
+        storage: u64(len(node)), observables: 1, proofs: 1,
+        circuits: 1, mpc_sessions: 0,
+    })
+
+    node
+}
+
+circuit get_ancestors(version_id: VersionId, max_depth: u64) -> AncestorResult
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files
+    observe metrics: [ancestor_queries, traversal_depth, nodes_visited]
+    monitor "traversal_latency" { traversal_time_ms < 200 }
+    invariant "max_depth_bounded" { max_depth <= 1000 }
+    wasm_abi [eslite_query]
+{
+    let node = eslite_query("versions", version_id)
+    if node == null { return error("version_not_found") }
+
+    let ancestors = []
+    let visited = set()
+    let queue = [version_id]
+
+    while len(queue) > 0 && len(ancestors) < max_depth {
+        let current_id = dequeue(queue)
+        if set_contains(visited, current_id) { continue }
+        set_insert(visited, current_id)
+
+        let current = eslite_query("versions", current_id)
+        if current == null { continue }
+
+        for i in 0..current.parent_count {
+            let pid = current.parent_ids[i]
+            if !set_contains(visited, pid) {
+                ancestors = append(ancestors, pid)
+                enqueue(queue, pid)
+            }
+        }
+    }
+
+    let proof_leaves = [version_id]
+    for a in ancestors { proof_leaves = append(proof_leaves, a) }
+    let proof = merkle_proof(proof_leaves, version_id)
+
+    AncestorResult {
+        version_id: version_id,
+        ancestors: ancestors,
+        depth: len(ancestors),
+        proof: proof,
+    }
+}
+
+circuit get_descendants(version_id: VersionId, max_depth: u64) -> DescendantResult
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files
+    observe metrics: [descendant_queries, traversal_depth]
+    monitor "descendant_latency" { traversal_time_ms < 200 }
+    invariant "max_depth_bounded" { max_depth <= 1000 }
+    wasm_abi [eslite_query]
+{
+    let node = eslite_query("versions", version_id)
+    if node == null { return error("version_not_found") }
+
+    let descendants = []
+    let visited = set()
+    let queue = [version_id]
+
+    while len(queue) > 0 && len(descendants) < max_depth {
+        let current_id = dequeue(queue)
+        if set_contains(visited, current_id) { continue }
+        set_insert(visited, current_id)
+
+        let children = eslite_query("parent_edges_by_parent", current_id)
+        for child_edge in children {
+            let cid = child_edge.child_id
+            if !set_contains(visited, cid) {
+                descendants = append(descendants, cid)
+                enqueue(queue, cid)
+            }
+        }
+    }
+
+    DescendantResult {
+        version_id: version_id,
+        descendants: descendants,
+        depth: len(descendants),
+    }
+}
+
+circuit find_common_ancestor(version_a: VersionId, version_b: VersionId) -> CommonAncestorResult
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files
+    observe metrics: [common_ancestor_queries, lca_depth, lca_latency_ms]
+    monitor "lca_latency" { lca_latency_ms < 500 }
+    wasm_abi [eslite_query]
+{
+    let ancestors_a = set()
+    let depth_map_a = map()
+    let queue_a = [(version_a, 0u64)]
+
+    while len(queue_a) > 0 {
+        let (vid, d) = dequeue(queue_a)
+        if set_contains(ancestors_a, vid) { continue }
+        set_insert(ancestors_a, vid)
+        map_insert(depth_map_a, vid, d)
+        let node = eslite_query("versions", vid)
+        if node != null {
+            for i in 0..node.parent_count {
+                enqueue(queue_a, (node.parent_ids[i], d + 1))
+            }
+        }
+    }
+
+    let queue_b = [(version_b, 0u64)]
+    let visited_b = set()
+
+    while len(queue_b) > 0 {
+        let (vid, d) = dequeue(queue_b)
+        if set_contains(visited_b, vid) { continue }
+        set_insert(visited_b, vid)
+
+        if set_contains(ancestors_a, vid) {
+            let depth_a = map_get(depth_map_a, vid)
+            let proof_a = merkle_proof_path(version_a, vid)
+            let proof_b = merkle_proof_path(version_b, vid)
+            return CommonAncestorResult {
+                ancestor_id: vid,
+                depth_a: depth_a,
+                depth_b: d,
+                proof_a: proof_a,
+                proof_b: proof_b,
+            }
+        }
+
+        let node = eslite_query("versions", vid)
+        if node != null {
+            for i in 0..node.parent_count {
+                enqueue(queue_b, (node.parent_ids[i], d + 1))
+            }
+        }
+    }
+
+    error("no_common_ancestor")
+}
+
+circuit merge_versions(file_id: FileId, author_id: UserId, author_pk: bytes(2592), author_sk: bytes(4896), version_a: VersionId, version_b: VersionId, merged_manifest: ManifestHash, strategy: MergeStrategy, message: string) -> VersionNode
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files {
+        sub_lex version fan_in
+    }
+    meters [compute_cycles, storage]
+    observe metrics: [merges_created, merge_conflicts, merge_strategies]
+    monitor "merge_success_rate" { merge_conflicts / merges_created < 0.2 }
+    invariant "distinct_branches" { version_a != version_b }
+    wasm_abi [eslite_insert, eslite_query, stream_emit, now]
+{
+    let node_a = eslite_query("versions", version_a)
+    let node_b = eslite_query("versions", version_b)
+    if node_a == null || node_b == null { return error("version_not_found") }
+    if node_a.file_id != file_id || node_b.file_id != file_id {
+        return error("file_id_mismatch")
+    }
+
+    let merged_size = match strategy {
+        MergeStrategy::TakeNewest => if node_a.created_ms > node_b.created_ms { node_a.file_size } else { node_b.file_size },
+        MergeStrategy::TakeLargest => if node_a.file_size > node_b.file_size { node_a.file_size } else { node_b.file_size },
+        _ => node_a.file_size,
+    }
+
+    let parents = [version_a, version_b, bytes(32){0}, bytes(32){0}]
+    create_version(
+        file_id, author_id, author_pk, author_sk,
+        merged_manifest, parents, 2,
+        merged_size, message
+    )
+}
+
+circuit prove_version(version_id: VersionId) -> VersionProof
+    status production
+    precision u64
+    povc true
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files
+    observe metrics: [proofs_generated, proof_verifications]
+    monitor "proof_latency" { proof_time_ms < 50 }
+    wasm_abi [eslite_query]
+{
+    let node = eslite_query("versions", version_id)
+    if node == null { return error("version_not_found") }
+
+    let sig_valid = polykit_identity::verify_signature(
+        node.author_pk,
+        node.version_id ++ node.file_id ++ node.manifest_hash ++ node.merkle_root ++ u64_to_bytes(node.created_ms),
+        node.signature
+    )
+
+    let merkle_leaves = [node.version_id, node.manifest_hash, node.author_id]
+    for i in 0..node.parent_count {
+        merkle_leaves = append(merkle_leaves, node.parent_ids[i])
+    }
+    let computed_root = merkle_tree_root(merkle_leaves)
+    let root_valid = computed_root == node.merkle_root
+
+    let proof_path = merkle_proof(merkle_leaves, node.version_id)
+
+    VersionProof {
+        version_id: version_id,
+        merkle_root: node.merkle_root,
+        proof_path: proof_path,
+        verified: root_valid,
+        author_verified: sig_valid,
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "create_initial_version" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let author_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("versioned-file-001"))
+        let manifest_hash = sha3_256(bytes("manifest-v1"))
+
+        let v1 = create_version(
+            file_id, author_id, pk, sk,
+            manifest_hash,
+            [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            0, 4096, "Initial version",
+        )
+    }
+    assert {
+        v1.version_id != zeroed(32)
+        v1.file_id == sha3_256(bytes("versioned-file-001"))
+        v1.author_id == author_id
+        v1.depth == 0
+        v1.parent_count == 0
+        v1.merkle_root != zeroed(32)
+        v1.signature != zeroed(4627)
+        v1.message == "Initial version"
+    }
+}
+
+test golden "create_linear_version_chain" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let author_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("chain-file"))
+
+        let v1 = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("manifest-v1")),
+            [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            0, 4096, "v1",
+        )
+
+        let v2 = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("manifest-v2")),
+            [v1.version_id, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            1, 8192, "v2",
+        )
+    }
+    assert {
+        v2.depth == 1
+        v2.parent_count == 1
+        v2.parent_ids[0] == v1.version_id
+        v2.file_size == 8192
+    }
+}
+
+test golden "merge_two_branches" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let author_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("merge-file"))
+
+        let base = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("base")),
+            [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            0, 1024, "base",
+        )
+
+        let branch_a = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("branch-a")),
+            [base.version_id, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            1, 2048, "branch A",
+        )
+
+        let branch_b = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("branch-b")),
+            [base.version_id, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            1, 3072, "branch B",
+        )
+
+        let merged = merge_versions(
+            file_id, author_id, pk, sk,
+            branch_a.version_id, branch_b.version_id,
+            sha3_256(bytes("merged-manifest")),
+            MergeStrategy::TakeNewest,
+            "merge A+B",
+        )
+    }
+    assert {
+        merged.parent_count == 2
+        merged.depth == 2
+        merged.message == "merge A+B"
+    }
+}
+
+test golden "prove_version_integrity" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let author_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("proof-file"))
+
+        let v1 = create_version(
+            file_id, author_id, pk, sk,
+            sha3_256(bytes("manifest-proof")),
+            [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}],
+            0, 512, "provable version",
+        )
+
+        let proof = prove_version(v1.version_id)
+    }
+    assert {
+        proof.verified == true
+        proof.author_verified == true
+        proof.merkle_root == v1.merkle_root
+        proof.version_id == v1.version_id
+    }
+}
+
+test golden "get_ancestors_linear" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let author_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("ancestor-file"))
+
+        let v1 = create_version(file_id, author_id, pk, sk, sha3_256(bytes("m1")), [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}], 0, 100, "v1")
+        let v2 = create_version(file_id, author_id, pk, sk, sha3_256(bytes("m2")), [v1.version_id, bytes(32){0}, bytes(32){0}, bytes(32){0}], 1, 200, "v2")
+        let v3 = create_version(file_id, author_id, pk, sk, sha3_256(bytes("m3")), [v2.version_id, bytes(32){0}, bytes(32){0}, bytes(32){0}], 1, 300, "v3")
+
+        let ancestors = get_ancestors(v3.version_id, 100)
+    }
+    assert {
+        ancestors.version_id == v3.version_id
+        len(ancestors.ancestors) == 2
+        ancestors.depth == 2
+    }
+}

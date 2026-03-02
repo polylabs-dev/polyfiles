@@ -1,0 +1,258 @@
+/// Poly Files Platform Health — Blind relay pattern health monitoring
+///
+/// Aggregates file-operation metrics through blinded, cohort-enforced telemetry.
+/// Stratum: kv store + lex governance under esn/global/org/polylabs/files.
+/// Cortex: obfuscation, write-time inference, anomaly alerting to files-team.
+///
+/// Zero-linkage: HKDF("poly-files-telemetry-v1") isolates all identity.
+/// No content bytes, file names, or user paths ever reach StreamSight.
+///
+/// govern lex esn/global/org/polylabs/files
+
+import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Data Declarations with Stratum + Cortex ─────────────────────────
+
+data PlatformMetrics : app v1 {
+    blinded_user_id: bytes(32),
+    cohort_ok: bool,
+    cohort_size: u32,
+    platform_queries: u64,
+    active_users: u64,
+    file_operations: u64,
+    storage_bytes_total: u64,
+    scatter_stores: u64,
+    version_creates: u64,
+    all_healthy: bool,
+    content_visible: bool,
+    baseline_deviation: f64,
+    anomaly_score: f64,
+    collected_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [blinded_user_id, anomaly_score]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+type HealthStatus = enum {
+    Healthy,
+    Degraded,
+    Critical,
+}
+
+// ── Streams ─────────────────────────────────────────────────────────
+
+stream files_health_events: event<PlatformMetrics>
+    retention 365d
+    consumers [streamsight, audit_trail]
+    classify blinded_user_id: METADATA, cohort_size: METADATA
+
+stream files_anomaly_events: event<PlatformMetrics>
+    retention forever
+    consumers [streamsight, governance, alerting]
+
+// ── Series ──────────────────────────────────────────────────────────
+
+series files_health_series: files_health_events
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Main Platform Health Circuit ────────────────────────────────────
+
+circuit files_platform_health(
+    spark_id: bytes(32),
+    active_user_count: u32,
+    platform_queries: u64,
+    active_users: u64,
+    file_operations: u64,
+    storage_bytes_total: u64,
+    scatter_stores: u64,
+    version_creates: u64,
+) -> PlatformMetrics
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files {
+        governance hierarchical
+        audit_trail true
+        sub_lex file_ops fan_in
+    }
+    precision C
+    streamsight true
+    povc true
+    observe metrics: [platform_queries, active_users, file_operations, storage_bytes_total, scatter_stores, version_creates]
+    invariant "no_content_at_platform" { content_visible == false }
+    property safety "session_isolation" { no_cross_session_data }
+    property liveness "eventually_healthy" { eventually(all_healthy == true) }
+    monitor "file_ops_baseline" { deviation(file_operations, baseline) < 0.15 }
+    esz_emit "verify/files_health.esz"
+    li_feed full_escir true, optimized_ir true, optimization_metadata true
+    fuzz_target
+    test golden "healthy_platform" {
+        let spark = bytes(32, 0xAA)
+        let result = files_platform_health(spark, 200, 5000, 150, 12000, 1099511627776, 800, 300)
+        assert result.all_healthy == true
+        assert result.content_visible == false
+        assert result.cohort_ok == true
+    }
+    test golden "small_cohort_still_collects" {
+        let spark = bytes(32, 0xBB)
+        let result = files_platform_health(spark, 10, 100, 8, 50, 1048576, 10, 5)
+        assert result.cohort_ok == false
+        assert result.content_visible == false
+    }
+{
+    let ts = now_ns() / 1000000
+
+    let blinded = polykit_blind_telemetry::blind_user_id(spark_id, "poly-files-telemetry-v1")
+
+    let (cohort_status, cohort_ok) = polykit_blind_telemetry::enforce_cohort(active_user_count, 50)
+
+    let file_ops_baseline = streamsight_baseline("file_operations", 3600000)
+    let current_deviation = if file_ops_baseline > 0 {
+        abs(file_operations - file_ops_baseline) / file_ops_baseline
+    } else {
+        0.0
+    }
+
+    let anomaly = streamsight_anomaly("files_health", PlatformMetrics {
+        platform_queries: platform_queries,
+        active_users: active_users,
+        file_operations: file_operations,
+        storage_bytes_total: storage_bytes_total,
+        scatter_stores: scatter_stores,
+        version_creates: version_creates,
+    })
+
+    let ops_healthy = current_deviation < 0.15
+    let storage_healthy = storage_bytes_total > 0
+    let scatter_healthy = scatter_stores <= file_operations
+    let all_ok = ops_healthy && storage_healthy && scatter_healthy
+
+    if anomaly.is_anomalous {
+        let alert_metrics = PlatformMetrics {
+            blinded_user_id: blinded,
+            cohort_ok: cohort_ok,
+            cohort_size: active_user_count,
+            platform_queries: platform_queries,
+            active_users: active_users,
+            file_operations: file_operations,
+            storage_bytes_total: storage_bytes_total,
+            scatter_stores: scatter_stores,
+            version_creates: version_creates,
+            all_healthy: false,
+            content_visible: false,
+            baseline_deviation: current_deviation,
+            anomaly_score: anomaly.score,
+            collected_at: ts,
+        }
+        emit(files_anomaly_events, alert_metrics)
+    }
+
+    let metrics = PlatformMetrics {
+        blinded_user_id: blinded,
+        cohort_ok: cohort_ok,
+        cohort_size: active_user_count,
+        platform_queries: platform_queries,
+        active_users: active_users,
+        file_operations: file_operations,
+        storage_bytes_total: storage_bytes_total,
+        scatter_stores: scatter_stores,
+        version_creates: version_creates,
+        all_healthy: all_ok,
+        content_visible: false,
+        baseline_deviation: current_deviation,
+        anomaly_score: anomaly.score,
+        collected_at: ts,
+    }
+
+    if cohort_ok {
+        emit(files_health_events, metrics)
+        eslite_insert("files_health", sha3_256(serialize(metrics)), metrics)
+    }
+
+    metrics
+}
+
+// ── Anomaly Check Circuit with Cortex AI Feed ───────────────────────
+
+circuit files_anomaly_check(
+    recent_metrics: list<PlatformMetrics>,
+    window_ms: u64,
+) -> (HealthStatus, f64, string)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files {
+        governance hierarchical
+        audit_trail true
+    }
+    precision C
+    streamsight true
+    observe metrics: [anomaly_checks, anomaly_detections]
+    monitor "anomaly_rate" { anomaly_detections < 50/hr }
+    cortex {
+        ai_feed {
+            model "files_health_classifier"
+            input [recent_metrics, window_ms]
+            output [health_status, confidence, explanation]
+            retrain on_drift
+            drift_threshold 0.10
+        }
+    }
+    test golden "no_anomaly_healthy" {
+        let m = [PlatformMetrics {
+            blinded_user_id: bytes(32, 0x00),
+            cohort_ok: true,
+            cohort_size: 200,
+            platform_queries: 5000,
+            active_users: 150,
+            file_operations: 12000,
+            storage_bytes_total: 1099511627776,
+            scatter_stores: 800,
+            version_creates: 300,
+            all_healthy: true,
+            content_visible: false,
+            baseline_deviation: 0.02,
+            anomaly_score: 0.1,
+            collected_at: 1000000,
+        }]
+        let (status, conf, _) = files_anomaly_check(m, 3600000)
+        assert status == HealthStatus::Healthy
+        assert conf > 0.8
+    }
+{
+    let ts = now_ns() / 1000000
+    let window_start = ts - window_ms
+
+    let windowed = filter(recent_metrics, |m| m.collected_at >= window_start)
+
+    if len(windowed) == 0 {
+        return (HealthStatus::Critical, 1.0, "no metrics in window")
+    }
+
+    let avg_deviation = sum(map(windowed, |m| m.baseline_deviation)) / len(windowed)
+    let max_anomaly = max(map(windowed, |m| m.anomaly_score))
+    let unhealthy_count = count(windowed, |m| !m.all_healthy)
+    let unhealthy_ratio = unhealthy_count / len(windowed)
+
+    let cortex_result = cortex_infer("files_health_classifier", {
+        deviations: map(windowed, |m| m.baseline_deviation),
+        anomaly_scores: map(windowed, |m| m.anomaly_score),
+        file_ops_trend: map(windowed, |m| m.file_operations),
+        storage_trend: map(windowed, |m| m.storage_bytes_total),
+    })
+
+    let (status, confidence, explanation) = if max_anomaly > 0.8 || unhealthy_ratio > 0.5 {
+        (HealthStatus::Critical, max_anomaly, cortex_result.explanation)
+    } else if avg_deviation > 0.10 || unhealthy_ratio > 0.2 {
+        (HealthStatus::Degraded, avg_deviation, cortex_result.explanation)
+    } else {
+        (HealthStatus::Healthy, 1.0 - avg_deviation, "all file operations within baseline")
+    }
+
+    streamsight_baseline("files_anomaly_score", window_ms)
+
+    (status, confidence, explanation)
+}

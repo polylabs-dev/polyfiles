@@ -1,0 +1,294 @@
+// PolyFiles File Graph — File registry with scatter health and classification overlays
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files
+//   DAG-based file registry tracking ownership, containment, classification,
+//   scatter health, offline cache state, and versioning metadata.
+//   Anomaly detection on rapid file creation/deletion patterns.
+//
+// Overlays (6):
+//   classification   — Classification enum per FileNode
+//   scatter_health   — shard availability ratio per FileNode
+//   offline_cached   — boolean per FileNode (client has local copy)
+//   version_count    — u64 version depth per FileNode
+//   size_bytes       — u64 original file size per FileNode
+//   shard_count      — u32 total shards across all chunks per FileNode
+
+import polykit_metering
+import polykit_governance
+
+type UserId = bytes(16)
+type FileId = bytes(32)
+type FolderId = bytes(32)
+type ManifestHash = bytes(32)
+
+type Classification = enum {
+    Public,
+    Internal,
+    Sensitive,
+    Restricted,
+    Sovereign,
+}
+
+type FileNode = struct {
+    file_id: FileId,
+    filename: string,
+    mime_type: string,
+    owner_id: UserId,
+    classification: Classification,
+    manifest_hash: ManifestHash,
+    created_at: u64,
+    modified_at: u64,
+    size_bytes: u64,
+    version_count: u64,
+    shard_count: u32,
+    scatter_health: f32,
+    offline_cached: bool,
+}
+
+type FolderNode = struct {
+    folder_id: FolderId,
+    name: string,
+    parent_id: option<FolderId>,
+    owner_id: UserId,
+    classification: Classification,
+    created_at: u64,
+    file_count: u64,
+    subfolder_count: u64,
+}
+
+type ContainsEdge = struct {
+    parent: FolderId,
+    child_file: option<FileId>,
+    child_folder: option<FolderId>,
+    added_at: u64,
+}
+
+type OwnedByEdge = struct {
+    resource_id: bytes(32),
+    owner_id: UserId,
+    granted_at: u64,
+    permission_level: string,
+}
+
+type AnomalyEvent = struct {
+    event_type: string,
+    user_id: UserId,
+    count: u64,
+    window_ms: u64,
+    threshold: u64,
+    timestamp: u64,
+    severity: string,
+}
+
+graph file_registry
+    lex esn/global/org/polylabs/files
+    observe metrics: [graph_nodes, graph_edges, graph_queries, overlay_updates]
+    monitor "graph_consistency" { orphan_nodes == 0 }
+    monitor "scatter_health_global" { avg_scatter_health > 0.95 }
+{
+    node FileNode key(file_id)
+    node FolderNode key(folder_id)
+
+    edge ContainsEdge from FolderNode to FileNode | FolderNode
+    edge OwnedByEdge from FileNode | FolderNode to UserId
+
+    overlay classification on FileNode {
+        type: Classification
+        index: true
+        observe metrics: [classification_distribution]
+    }
+
+    overlay scatter_health on FileNode {
+        type: f32
+        range: [0.0, 1.0]
+        alert_below: 0.8
+        observe metrics: [scatter_health_avg, scatter_health_min, unhealthy_files]
+    }
+
+    overlay offline_cached on FileNode {
+        type: bool
+        index: true
+        observe metrics: [cached_file_count, cache_hit_ratio]
+    }
+
+    overlay version_count on FileNode {
+        type: u64
+        observe metrics: [avg_version_depth, max_version_depth]
+    }
+
+    overlay size_bytes on FileNode {
+        type: u64
+        observe metrics: [total_storage_bytes, avg_file_size, max_file_size]
+    }
+
+    overlay shard_count on FileNode {
+        type: u32
+        observe metrics: [total_shard_count, avg_shards_per_file]
+    }
+}
+
+// --- Insert a new file into the registry ---
+circuit register_file(
+    folder_id: FolderId,
+    file: FileNode,
+    owner_id: UserId,
+) -> FileNode
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [files_registered, registration_latency]
+    monitor "registration_rate" { files_registered_per_min < 1000 }
+    invariant "file_id_unique" { !graph_contains(file_registry, FileNode, file.file_id) }
+    invariant "folder_exists" { graph_contains(file_registry, FolderNode, folder_id) }
+    meters [compute_cycles, storage, executions]
+{
+    graph_insert(file_registry, file)
+    let contains = ContainsEdge {
+        parent: folder_id,
+        child_file: some(file.file_id),
+        child_folder: none,
+        added_at: now(),
+    }
+    graph_insert_edge(file_registry, contains)
+    let owned = OwnedByEdge {
+        resource_id: file.file_id,
+        owner_id: owner_id,
+        granted_at: now(),
+        permission_level: "owner",
+    }
+    graph_insert_edge(file_registry, owned)
+    overlay_set(file_registry, "classification", file.file_id, file.classification)
+    overlay_set(file_registry, "scatter_health", file.file_id, file.scatter_health)
+    overlay_set(file_registry, "offline_cached", file.file_id, file.offline_cached)
+    overlay_set(file_registry, "version_count", file.file_id, file.version_count)
+    overlay_set(file_registry, "size_bytes", file.file_id, file.size_bytes)
+    overlay_set(file_registry, "shard_count", file.file_id, file.shard_count)
+    check_creation_anomaly(owner_id)
+    file
+}
+
+// --- Create a folder in the registry ---
+circuit register_folder(
+    parent_id: option<FolderId>,
+    folder: FolderNode,
+) -> FolderNode
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [folders_registered]
+    invariant "folder_id_unique" { !graph_contains(file_registry, FolderNode, folder.folder_id) }
+    meters [compute_cycles, storage]
+{
+    graph_insert(file_registry, folder)
+    if parent_id.is_some() {
+        let contains = ContainsEdge {
+            parent: parent_id.unwrap(),
+            child_file: none,
+            child_folder: some(folder.folder_id),
+            added_at: now(),
+        }
+        graph_insert_edge(file_registry, contains)
+    }
+    folder
+}
+
+// --- Update scatter health for a file ---
+circuit update_scatter_health(file_id: FileId, available_shards: u32, total_shards: u32) -> f32
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [scatter_health_updates, degraded_files]
+    monitor "shard_degradation" { health < 0.8 }
+    invariant "shards_valid" { available_shards <= total_shards }
+    meters [compute_cycles]
+{
+    let health = f32(available_shards) / f32(total_shards)
+    overlay_set(file_registry, "scatter_health", file_id, health)
+    if health < 0.8 {
+        emit_alert("scatter_degraded", file_id, health)
+    }
+    health
+}
+
+// --- Remove a file from the registry ---
+circuit unregister_file(file_id: FileId, user_id: UserId) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [files_unregistered, deletion_latency]
+    invariant "file_exists" { graph_contains(file_registry, FileNode, file_id) }
+    meters [compute_cycles, executions]
+{
+    graph_remove(file_registry, FileNode, file_id)
+    graph_remove_edges(file_registry, ContainsEdge, |e| e.child_file == some(file_id))
+    graph_remove_edges(file_registry, OwnedByEdge, |e| e.resource_id == file_id)
+    check_deletion_anomaly(user_id)
+    true
+}
+
+// --- Query files by classification ---
+circuit query_by_classification(
+    classification: Classification,
+    owner_id: option<UserId>,
+) -> list<FileNode>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [graph_queries, query_result_count]
+    meters [compute_cycles]
+{
+    let candidates = overlay_query(file_registry, "classification", classification)
+    if owner_id.is_some() {
+        filter(candidates, |f| f.owner_id == owner_id.unwrap())
+    } else {
+        candidates
+    }
+}
+
+// --- Anomaly detection: rapid file creation ---
+circuit check_creation_anomaly(user_id: UserId) -> option<AnomalyEvent>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [creation_anomalies_detected]
+{
+    let window_ms: u64 = 60_000
+    let threshold: u64 = 100
+    let recent = count_user_operations(user_id, "create", window_ms)
+    if recent > threshold {
+        let event = AnomalyEvent {
+            event_type: "rapid_file_creation",
+            user_id: user_id,
+            count: recent,
+            window_ms: window_ms,
+            threshold: threshold,
+            timestamp: now(),
+            severity: if recent > threshold * 5 { "critical" } else { "warning" },
+        }
+        emit_anomaly(event)
+        some(event)
+    } else {
+        none
+    }
+}
+
+// --- Anomaly detection: rapid file deletion ---
+circuit check_deletion_anomaly(user_id: UserId) -> option<AnomalyEvent>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files
+    observe metrics: [deletion_anomalies_detected]
+{
+    let window_ms: u64 = 60_000
+    let threshold: u64 = 50
+    let recent = count_user_operations(user_id, "delete", window_ms)
+    if recent > threshold {
+        let event = AnomalyEvent {
+            event_type: "rapid_file_deletion",
+            user_id: user_id,
+            count: recent,
+            window_ms: window_ms,
+            threshold: threshold,
+            timestamp: now(),
+            severity: if recent > threshold * 3 { "critical" } else { "warning" },
+        }
+        emit_anomaly(event)
+        some(event)
+    } else {
+        none
+    }
+}

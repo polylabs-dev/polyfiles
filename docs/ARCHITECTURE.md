@@ -80,8 +80,8 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │  ┌──────┴────────────────┴──────────────┴───────────────┴────────┐  │
 │  │              FastLang Circuits (WASM via .escd)                  │  │
 │  │                                                                 │  │
-│  │  polydata_encrypt.fl │ polydata_chunk.fl │ polydata_classify.fl │  │
-│  │  polydata_manifest.fl │ polydata_eslm_classify.fl               │  │
+│  │  polyfiles_encrypt.fl │ polyfiles_chunk.fl │ polyfiles_classify.fl │  │
+│  │  polyfiles_manifest.fl │ polyfiles_eslm_classify.fl               │  │
 │  │  (all ML-DSA-87 signed .escd packages, StreamSight-annotated)  │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
@@ -97,9 +97,9 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
 │  │  ESLite (Client-Side State)                                       │  │
-│  │  /polydata/files/* — file metadata + manifest cache              │  │
-│  │  /polydata/index/* — encrypted search index                      │  │
-│  │  /polydata/offline/* — offline manifest + encrypted cache        │  │
+│  │  /polyfiles/files/* — file metadata + manifest cache              │  │
+│  │  /polyfiles/index/* — encrypted search index                      │  │
+│  │  /polyfiles/offline/* — offline manifest + encrypted cache        │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
@@ -116,8 +116,8 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │  ┌────────────────────────────┴─────────────────────────────────────┐ │
 │  │  Lattice-Hosted Circuits                                           │ │
 │  │                                                                    │ │
-│  │  polydata_storage_router.fl │ polydata_share.fl                   │ │
-│  │  polydata_metering.fl       │ scatter-cas runtime                 │ │
+│  │  polyfiles_storage_router.fl │ polyfiles_share.fl                   │ │
+│  │  polyfiles_metering.fl       │ scatter-cas runtime                 │ │
 │  └────┬───────────┬──────────────┬──────────────────────────────────┘ │
 │       │           │              │                                     │
 │  ┌────┴──────────────────────────────────────────────────────────┐   │
@@ -131,48 +131,62 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 
 ## Graph/DAG Constructs
 
-### File Registry Graph (`polydata_file_graph.fl`)
+### File Registry Graph (`polyfiles_file_graph.fl`)
 
 The file system is modeled as a typed graph. Files, folders, and users are nodes; containment, ownership, and sharing are edges. Overlays provide real-time state (classification, scatter health, version count) without mutating the base graph.
 
 ```fastlang
-type FileNode = struct {
-    file_id: bytes(16),
+data FileNode : app v1 {
+    file_id: bytes(32),
+    owner_id: bytes(16),
     name: string,
+    mime_type: string,
     size_bytes: u64,
     content_hash: bytes(32),
+    manifest_hash: bytes(32),
     classification: u8,
-    created_at: u64,
-    updated_at: u64,
+    shard_count: u16,
+    version_count: u32,
+    created_ms: u64,
+    updated_ms: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type FolderNode = struct {
-    folder_id: bytes(16),
+data FolderNode : app v1 {
+    folder_id: bytes(32),
+    owner_id: bytes(16),
     name: string,
     classification: u8,
-    created_at: u64,
+    child_count: u32,
+    total_size: u64,
+    created_ms: u64,
+    updated_ms: u64,
 }
-
-type ContainsEdge = struct {
-    added_at: u64,
-}
-
-type OwnedByEdge = struct {
-    owner_since: u64,
-}
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+    }
 
 graph file_registry {
-    node FileNode
-    node FolderNode
-    edge ContainsEdge
-    edge OwnedByEdge
+    node FileNode { key file_id }
+    node FolderNode { key folder_id }
+    edge ContainsEdge { from FolderNode via parent_id, to FileNode|FolderNode via child_id }
+    edge OwnedByEdge { from FileNode via node_id, to UserId via owner_id }
 
     overlay classification: u8 curate delta_curate
     overlay scatter_health: u8 curate delta_curate
-    overlay offline_cached: bool curate
+    overlay offline_cached: bool curate delta_curate
     overlay version_count: u32 bitmask delta_curate
     overlay size_bytes: u64 bitmask delta_curate
-    overlay shard_count: u16 bitmask
+    overlay shard_count: u16 bitmask delta_curate
 
     storage csr {
         hot @bram,
@@ -180,12 +194,18 @@ graph file_registry {
         cold @nvme,
     }
 
+    ai_feed file_anomaly_detection
     ai_feed classification_suggestion
 
     observe file_registry: [classification, scatter_health, size_bytes] threshold: {
         anomaly_score 0.85
-        baseline_window 120
+        baseline_window 300
     }
+
+    traverse children(folder: FolderNode) -> [FileNode | FolderNode]
+    traverse ancestors(node: FileNode | FolderNode) -> [FolderNode]
+    reduce total_size(folder: FolderNode) -> u64
+    reduce deep_file_count(folder: FolderNode) -> u32
 }
 
 series file_series: file_registry
@@ -196,47 +216,70 @@ series file_series: file_registry
 
 Key circuits: `create_file`, `create_folder`, `move_file`, `delete_file`, `reclassify`, `list_folder`.
 
-### Version History DAG (`polydata_version_dag.fl`)
+### Version History DAG (`polyfiles_version_dag.fl`)
 
 File versioning is modeled as a DAG, mirroring the `commit_history` pattern from the GRAPH_SPEC. Each version is a node; parent relationships are edges. This is backed by `scatter-cas` for content-addressable storage.
 
 ```fastlang
-type VersionNode = struct {
+data VersionNode : app v1 {
     version_id: bytes(32),
-    file_id: bytes(16),
+    file_id: bytes(32),
+    author_id: bytes(16),
     manifest_hash: bytes(32),
-    signer_pubkey: bytes(2592),
+    parent_ids: [bytes(32); 4],
+    parent_count: u32,
+    depth: u64,
+    merkle_root: bytes(32),
+    file_size: u64,
     message: string,
-    created_at: u64,
+    signature: bytes(4627),
+    author_pk: bytes(2592),
+    created_ms: u64,
 }
-
-type ParentEdge = struct {
-    parent_version: bytes(32),
-}
+    store dag
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [author_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 dag version_history {
-    node VersionNode
-    edge ParentEdge
+    node VersionNode { key version_id, signed_by author_pk using ML-DSA-87 }
+    edge ParentEdge { from child_id, to parent_id }
 
     enforce acyclic
     sign ml_dsa_87
 
     storage merkle_csr {
-        hash ml_dsa_87
-        tier bram  { capacity: 10_000 }
-        tier nvme  { overflow: true }
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    attest povc {
+        witness threshold(2, 3)
     }
 
     overlay shard_health: u8 curate delta_curate
     overlay download_count: u64 bitmask delta_curate
+    overlay branch_depth: u64 bitmask delta_curate
 
-    traverse ancestors(version: VersionNode) -> [VersionNode]
-    traverse common_ancestor(a: VersionNode, b: VersionNode) -> VersionNode
-    prove inclusion(version: VersionNode, root: VersionNode) -> MerkleProof
+    ai_feed version_anomaly_detection
+    ai_feed merge_conflict_prediction
+
+    observe version_history: [shard_health, download_count, branch_depth] threshold: {
+        anomaly_score 0.85
+        baseline_window 300
+    }
+
+    ancestors(version: VersionNode) -> [VersionNode]
+    descendants(version: VersionNode) -> [VersionNode]
+    common_ancestor(a: VersionNode, b: VersionNode) -> VersionNode
 
     match {
-        (base: VersionNode) <-[parent]- (a: VersionNode),
-        (base: VersionNode) <-[parent]- (b: VersionNode)
+        (base: VersionNode) <-[ParentEdge]- (a: VersionNode),
+        (base: VersionNode) <-[ParentEdge]- (b: VersionNode)
         where a != b
     } -> MergeCandidate
 }
@@ -249,62 +292,99 @@ series version_series: version_history
 
 Key circuits: `create_version`, `list_versions`, `diff_versions`, `merge_versions`, `rollback`.
 
-### Share Network Graph (`polydata_share_graph.fl`)
+### Share Network Graph (`polyfiles_share_graph.fl`)
 
 Sharing relationships are a graph. Users, files, and ephemeral links are nodes; share permissions are edges with typed access levels.
 
 ```fastlang
-type ShareUserNode = struct {
+data ShareUserNode : app v1 {
     user_id: bytes(16),
-    signing_pubkey: bytes(2592),
+    email: string,
+    display_name_hash: bytes(32),
+    public_key: bytes(2592),
+    shares_owned: u64,
+    shares_received: u64,
+    joined_ms: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        redact [email]
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type SharedFileNode = struct {
-    file_id: bytes(16),
-    wrapped_key: bytes(1568),
+data SharedFileNode : app v1 {
+    file_id: bytes(32),
+    owner_id: bytes(16),
+    file_size: u64,
+    content_hash: bytes(32),
+    share_count: u32,
+    ephemeral_count: u32,
+    created_ms: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+    }
 
-type EphemeralLinkNode = struct {
-    link_id: bytes(8),
-    onetime_pubkey: bytes(1568),
-    created_at: u64,
-    expires_at: u64,
-    max_uses: u32,
+data EphemeralLinkNode : app v1 {
+    link_id: bytes(32),
+    file_id: bytes(32),
+    creator_id: bytes(16),
+    link_secret: bytes(32),
+    max_downloads: u32,
+    downloads_used: u32,
+    created_ms: u64,
+    expires_ms: u64,
+    state: ShareState,
 }
-
-type SharedWithEdge = struct {
-    permission: u8,
-    granted_at: u64,
-    granted_by: bytes(16),
-    expires_at: u64,
-}
-
-type EphemeralAccessEdge = struct {
-    classification: u8,
-    permission: u8,
-}
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        redact [link_secret]
+        infer on_write
+        on_anomaly alert "files-security"
+    }
 
 state_machine share_lifecycle {
-    initial PENDING
-    persistence wal
-    terminal [REVOKED, EXPIRED]
-    li_anomaly_detection true
+    initial Pending
 
-    PENDING -> ACTIVE when signature_verified guard acl_signed
-    ACTIVE -> REVOKED when owner_revoked
-    ACTIVE -> EXPIRED when ttl_expired
+    state Pending {
+        on grant_accepted -> Active
+        on grant_rejected -> Revoked
+    }
+    state Active {
+        on owner_revoked -> Revoked
+        on ttl_expired -> Expired
+        on permission_upgraded -> Active
+        on permission_downgraded -> Active
+    }
+    state Revoked { terminal true }
+    state Expired { terminal true }
+
+    anomaly "stale_pending" { duration_in(Pending) > 604_800_000 }
+    anomaly "rapid_churn" { transitions_to(Revoked) > 10 in 3_600_000 }
+    anomaly "ephemeral_overuse" { ephemeral_count > 100 per user per 86_400_000 }
+    anomaly "permission_escalation" { transitions_to(Active) via permission_upgraded > 5 in 3_600_000 }
 }
 
 graph share_network {
-    node ShareUserNode
-    node SharedFileNode
-    node EphemeralLinkNode
-    edge SharedWithEdge
-    edge EphemeralAccessEdge
+    node ShareUserNode { key user_id }
+    node SharedFileNode { key file_id }
+    node EphemeralLinkNode { key link_id, ttl expires_ms }
+    edge OwnsEdge { from ShareUserNode, to SharedFileNode }
+    edge ShareEdge { from ShareUserNode via from_user, to ShareUserNode via to_user, through SharedFileNode }
+    edge EphemeralEdge { from SharedFileNode, to EphemeralLinkNode }
 
     overlay permission_level: u8 curate delta_curate
     overlay access_count: u32 bitmask delta_curate
-    overlay expires_at: u64 curate
+    overlay expires_at: u64 curate delta_curate
+    overlay active_shares: u32 bitmask delta_curate
+    overlay ephemeral_active: u32 bitmask delta_curate
 
     storage csr {
         hot @bram,
@@ -312,10 +392,17 @@ graph share_network {
         cold @nvme,
     }
 
-    observe share_network: [permission_level, access_count] threshold: {
+    ai_feed share_anomaly_detection
+    ai_feed permission_escalation_detection
+
+    observe share_network: [permission_level, access_count, active_shares] threshold: {
         anomaly_score 0.9
         baseline_window 300
     }
+
+    traverse shared_with(user: ShareUserNode) -> [SharedFileNode]
+    traverse file_accessors(file: SharedFileNode) -> [ShareUserNode]
+    traverse transitive_access(user: ShareUserNode) -> [SharedFileNode]
 }
 
 series share_series: share_network
@@ -325,6 +412,100 @@ series share_series: share_network
 ```
 
 Key circuits: `grant_access`, `revoke_access`, `create_ephemeral_link`, `consume_link`, `list_shared_with`.
+
+---
+
+## Stratum & Cortex Integration
+
+All graph and DAG data types in Poly Files use **Stratum storage bindings** (`store graph`, `store dag`) and **Cortex AI governance** (`cortex {}` blocks) to enforce field-level visibility, inference triggers, and anomaly feedback loops. This replaces the older `type X = struct` pattern with `data X : app v1` declarations that compose storage, lex governance, and AI policy at the type level.
+
+### Stratum Storage Bindings
+
+Each `data` declaration specifies which stratum backend stores its instances:
+
+| Data Type | Stratum | Lex Namespace | Backing Structure |
+|-----------|---------|---------------|-------------------|
+| `FileNode` | `store graph` | `esn/global/org/polylabs/files` | `file_registry` graph, CSR storage (bram → ddr → nvme) |
+| `FolderNode` | `store graph` | `esn/global/org/polylabs/files` | `file_registry` graph, CSR storage |
+| `VersionNode` | `store dag` | `esn/global/org/polylabs/files` | `version_history` DAG, merkle_csr storage (bram → ddr → nvme) |
+| `ShareUserNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage |
+| `SharedFileNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage |
+| `EphemeralLinkNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage (TTL-bounded) |
+
+All graph storage uses three-tier CSR (Compressed Sparse Row):
+- **`hot @bram`** — active working set in block RAM (FPGA) or L1/L2 cache
+- **`warm @ddr`** — recently accessed data in DDR memory
+- **`cold @nvme`** — archival data on NVMe storage
+
+The version DAG uses `merkle_csr` which extends CSR with Merkle hash chains, `enforce acyclic` constraint, and ML-DSA-87 node signing (`sign ml_dsa_87`). It also includes `attest povc { witness threshold(2, 3) }` for proof-of-verifiable-compute attestation requiring 2-of-3 witness consensus.
+
+### Cortex Visibility Policies
+
+Cortex policies are declared per data type. Each field is either **exposed** (default), **obfuscated** (pseudonymized for AI processing), or **redacted** (completely hidden from Cortex inference):
+
+| Data Type | Redacted Fields | Obfuscated Fields | Exposed Fields |
+|-----------|-----------------|--------------------|-|
+| `FileNode` | — | `owner_id` | `file_id`, `name`, `mime_type`, `size_bytes`, `content_hash`, `manifest_hash`, `classification`, `shard_count`, `version_count`, `created_ms`, `updated_ms` |
+| `FolderNode` | — | `owner_id` | `folder_id`, `name`, `classification`, `child_count`, `total_size`, `created_ms`, `updated_ms` |
+| `VersionNode` | — | `author_id` | `version_id`, `file_id`, `manifest_hash`, `parent_ids`, `parent_count`, `depth`, `merkle_root`, `file_size`, `message`, `signature`, `author_pk`, `created_ms` |
+| `ShareUserNode` | `email` | `user_id` | `display_name_hash`, `public_key`, `shares_owned`, `shares_received`, `joined_ms` |
+| `SharedFileNode` | — | `owner_id` | `file_id`, `file_size`, `content_hash`, `share_count`, `ephemeral_count`, `created_ms` |
+| `EphemeralLinkNode` | `link_secret` | — | `link_id`, `file_id`, `creator_id`, `max_downloads`, `downloads_used`, `created_ms`, `expires_ms`, `state` |
+
+**Obfuscation** replaces the field value with a deterministic pseudonym (HMAC-derived) so Cortex can detect patterns across records without learning the actual identity. **Redaction** replaces the field with a zero-value sentinel; Cortex never sees the original data.
+
+### Cortex Inference Triggers & Feedback Handlers
+
+Each `cortex {}` block specifies when inference runs and where anomaly alerts route:
+
+| Data Type | Trigger | Feedback Handler | Alert Target |
+|-----------|---------|------------------|--------------|
+| `FileNode` | `infer on_write` | `on_anomaly alert "files-team"` | `files-team` |
+| `FolderNode` | `infer on_write` | — | — |
+| `VersionNode` | `infer on_write` | `on_anomaly alert "files-team"` | `files-team` |
+| `ShareUserNode` | `infer on_write` | `on_anomaly alert "files-team"` | `files-team` |
+| `SharedFileNode` | `infer on_write` | — | — |
+| `EphemeralLinkNode` | `infer on_write` | `on_anomaly alert "files-security"` | `files-security` |
+
+**Trigger modes**:
+- `on_write` — inference runs synchronously on every insert/update. Used for all Poly Files data types to catch anomalies at write time (unusual file sizes, rapid reclassification, suspicious share patterns).
+- `on_read` — inference runs on read (not currently used in Poly Files; suitable for lazy-evaluated classification suggestions).
+
+**Feedback handlers**:
+- `alert <team>` — routes anomaly to the named team's incident feed via StreamSight (`lex://estream/apps/polylabs.files/incidents`)
+- `store` — persists the anomaly score and explanation in the series for audit (implicit via `series ... witness_attest true`)
+- `auto_apply` — automatically applies the Cortex recommendation (e.g., auto-reclassify). Not yet enabled for Poly Files; requires human-in-the-loop review gate.
+
+### Graph-Level AI Feeds & Observe Thresholds
+
+Beyond per-type Cortex, each graph/DAG declares `ai_feed` streams and `observe` threshold blocks:
+
+| Construct | AI Feeds | Observed Overlays | Anomaly Score | Baseline Window |
+|-----------|----------|-------------------|---------------|-----------------|
+| `file_registry` | `file_anomaly_detection`, `classification_suggestion` | `classification`, `scatter_health`, `size_bytes` | 0.85 | 300s |
+| `version_history` | `version_anomaly_detection`, `merge_conflict_prediction` | `shard_health`, `download_count`, `branch_depth` | 0.85 | 300s |
+| `share_network` | `share_anomaly_detection`, `permission_escalation_detection` | `permission_level`, `access_count`, `active_shares` | 0.9 | 300s |
+
+The `observe` block continuously computes anomaly scores over the listed overlays. When the score exceeds the threshold, the graph-level AI feed fires and the per-type `on_anomaly` handler routes the alert.
+
+### Quantum State Snapshots (`.q`)
+
+Every `series` declaration (`file_series`, `version_series`, `share_series`) includes:
+
+```fastlang
+series file_series: file_registry
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+```
+
+This enables **`.q` quantum state snapshots** — a complete point-in-time capture of the graph/DAG state:
+
+- **`merkle_chain true`** — each series entry is chained via Merkle hash to the previous, forming a tamper-evident log of all mutations
+- **`lattice_imprint true`** — the series head hash is periodically imprinted on the eStream lattice, creating an immutable public timestamp
+- **`witness_attest true`** — independent witness nodes attest to the series state, providing Byzantine-fault-tolerant proof that the snapshot is authentic
+
+A `.q` snapshot captures: all node/edge data, all overlay values, the Cortex inference state (anomaly scores, last-inferred timestamps), and the state machine positions (e.g., `share_lifecycle` states). This is used for compliance audits, disaster recovery, and cross-datacenter replication verification.
 
 ---
 
@@ -367,9 +548,9 @@ scatter-cas RefStore
 `poly-git` is now a thin wrapper over eStream's `es-git` CLI (`estream/tools/es-git/`). It adds classification-driven scatter policy as an overlay on the commit DAG.
 
 ```bash
-git remote add poly poly-git://org.polydata/my-repo
+git remote add poly poly-git://org.polygit/my-repo
 git push poly main      # → es-git push with classification overlay
-git clone poly-git://org.polydata/my-repo
+git clone poly-git://org.polygit/my-repo
 git pull poly main
 ```
 
@@ -389,15 +570,15 @@ estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-bu
 
 | Circuit | File | Purpose | Size Budget |
 |---------|------|---------|-------------|
-| `polydata_encrypt` | `polydata_encrypt.fl` | ML-KEM-1024 key gen, AES-256-GCM chunk encryption | ≤128 KB |
-| `polydata_chunk` | `polydata_chunk.fl` | 4 MB chunking, erasure coding, reassembly | ≤128 KB |
-| `polydata_classify` | `polydata_classify.fl` | Classification assignment, policy lookup | ≤128 KB |
-| `polydata_manifest` | `polydata_manifest.fl` | Manifest build, ML-DSA-87 signing, verification | ≤128 KB |
-| `polydata_eslm_classify` | `polydata_eslm_classify.fl` | ESLM content auto-classification | ≤128 KB |
+| `polyfiles_encrypt` | `polyfiles_encrypt.fl` | ML-KEM-1024 key gen, AES-256-GCM chunk encryption | ≤128 KB |
+| `polyfiles_chunk` | `polyfiles_chunk.fl` | 4 MB chunking, erasure coding, reassembly | ≤128 KB |
+| `polyfiles_classify` | `polyfiles_classify.fl` | Classification assignment, policy lookup | ≤128 KB |
+| `polyfiles_manifest` | `polyfiles_manifest.fl` | Manifest build, ML-DSA-87 signing, verification | ≤128 KB |
+| `polyfiles_eslm_classify` | `polyfiles_eslm_classify.fl` | ESLM content auto-classification | ≤128 KB |
 
 All circuits compose PolyKit:
 ```fastlang
-circuit polydata_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes) -> bytes
+circuit polyfiles_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes) -> bytes
     profile poly_framework_sensitive
     composes: [polykit_identity, polykit_metering, polykit_sanitize]
     lex esn/global/org/polylabs/data/encrypt
@@ -412,30 +593,30 @@ circuit polydata_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes) 
 
 | Circuit | File | Purpose |
 |---------|------|---------|
-| `polydata_storage_router` | `polydata_storage_router.fl` | Scatter policy enforcement, VRF shard distribution |
-| `polydata_share` | `polydata_share.fl` | ACL enforcement, ephemeral link validation |
-| `polydata_metering` | `polydata_metering.fl` | Per-product 8D metering (isolated) |
+| `polyfiles_storage_router` | `polyfiles_storage_router.fl` | Scatter policy enforcement, VRF shard distribution |
+| `polyfiles_share` | `polyfiles_share.fl` | ACL enforcement, ephemeral link validation |
+| `polyfiles_metering` | `polyfiles_metering.fl` | Per-product 8D metering (isolated) |
 
 ---
 
 ## File Upload Flow
 
 1. User selects file(s) in Poly Data client
-2. **`polydata_classify` circuit** (WASM):
+2. **`polyfiles_classify` circuit** (WASM):
    - Checks `.polyclassification`, folder inheritance, enterprise policy
-   - Falls through to `polydata_eslm_classify` for AI suggestion if no explicit tag
-3. **`polydata_encrypt` circuit** (WASM):
+   - Falls through to `polyfiles_eslm_classify` for AI suggestion if no explicit tag
+3. **`polyfiles_encrypt` circuit** (WASM):
    - Generates random AES-256-GCM per-file key
    - Wraps per-file key with user's SPARK ML-KEM-1024 public key
-4. **`polydata_chunk` circuit** (WASM):
+4. **`polyfiles_chunk` circuit** (WASM):
    - Chunks large files (4 MB chunks)
    - Encrypts each chunk with per-file AES-256-GCM key
    - Erasure-codes chunks (k-of-n based on classification)
-5. **`polydata_manifest` circuit** (WASM):
+5. **`polyfiles_manifest` circuit** (WASM):
    - Constructs scatter-cas `Commit` object: chunk hashes, shard map, classification
    - Signs with user's SPARK ML-DSA-87 signing key
 6. Client emits to `polylabs.data.{user_id}.upload` via eStream wire protocol
-7. **`polydata_storage_router` circuit** (lattice):
+7. **`polyfiles_storage_router` circuit** (lattice):
    - Validates ML-DSA-87 signature
    - Enforces scatter policy per classification
    - Distributes shards via VRF across providers
@@ -533,7 +714,7 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 | RESTRICTED | NO offline — streaming view only |
 | SOVEREIGN | NO offline — HSM-gated streaming view |
 
-Offline copies stored in ESLite (`/polydata/offline/*`), encrypted with device-bound SPARK key.
+Offline copies stored in ESLite (`/polyfiles/offline/*`), encrypted with device-bound SPARK key.
 
 ---
 
@@ -542,18 +723,18 @@ Offline copies stored in ESLite (`/polydata/offline/*`), encrypted with device-b
 ```
 polydata/
 ├── circuits/fl/
-│   ├── polydata_encrypt.fl
-│   ├── polydata_chunk.fl
-│   ├── polydata_classify.fl
-│   ├── polydata_manifest.fl
-│   ├── polydata_eslm_classify.fl
-│   ├── polydata_storage_router.fl
-│   ├── polydata_share.fl
-│   ├── polydata_metering.fl
+│   ├── polyfiles_encrypt.fl
+│   ├── polyfiles_chunk.fl
+│   ├── polyfiles_classify.fl
+│   ├── polyfiles_manifest.fl
+│   ├── polyfiles_eslm_classify.fl
+│   ├── polyfiles_storage_router.fl
+│   ├── polyfiles_share.fl
+│   ├── polyfiles_metering.fl
 │   └── graphs/
-│       ├── polydata_file_graph.fl
-│       ├── polydata_version_dag.fl
-│       └── polydata_share_graph.fl
+│       ├── polyfiles_file_graph.fl
+│       ├── polyfiles_version_dag.fl
+│       └── polyfiles_share_graph.fl
 ├── apps/console/
 │   └── src/widgets/
 ├── packages/sdk/

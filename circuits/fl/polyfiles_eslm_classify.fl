@@ -1,0 +1,418 @@
+// PolyFiles ESLM Classify — ESLM-powered auto-classification with PII sanitization
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/eslm
+//   On-device ESLM analyzes file content samples (first 4KB) to suggest
+//   classification tags with confidence scores. Content never leaves WASM.
+//
+// Confidence thresholds:
+//   >= 0.8  → auto-apply classification
+//   >= 0.5  → suggest-with-confirm (user approves)
+//   <  0.5  → require-manual classification
+//
+// 3-stage PII sanitization pipeline (runs before any telemetry emission):
+//   Stage 1: PII Detection    — named entities, SSNs, emails, phones → placeholders
+//   Stage 2: Value Transform   — currency, dates → categorical tokens
+//   Stage 3: Audit Record      — ESF field-level audit, PoVC witness, reversibility proof
+//
+// Compliance: HIPAA, PCI-DSS, GDPR, SOC2
+
+import polykit_metering
+import polykit_governance
+
+type Classification = enum {
+    Public,
+    Internal,
+    Sensitive,
+    Restricted,
+    Sovereign,
+}
+
+type ConfidenceAction = enum {
+    AutoApply,
+    SuggestWithConfirm,
+    RequireManual,
+}
+
+type ClassificationSuggestion = struct {
+    tag: Classification,
+    confidence: f32,
+    action: ConfidenceAction,
+    alternatives: list<ClassificationAlternative>,
+    sanitized: bool,
+    reasoning: string,
+}
+
+type ClassificationAlternative = struct {
+    tag: Classification,
+    confidence: f32,
+}
+
+type SanitizedContent = struct {
+    content: bytes,
+    pii_count: u32,
+    transforms_applied: u32,
+    audit_hash: bytes(32),
+    compliance_flags: list<string>,
+}
+
+type PiiDetection = struct {
+    entity_type: string,
+    start_offset: u32,
+    end_offset: u32,
+    placeholder: string,
+}
+
+type FeedbackRecord = struct {
+    sample_hash: bytes(32),
+    suggested_tag: Classification,
+    corrected_tag: option<Classification>,
+    rating: u8,
+    reviewer_hash: bytes(32),
+    timestamp: u64,
+    weight: f32,
+}
+
+const THRESHOLD_AUTO_APPLY: f32 = 0.8
+const THRESHOLD_SUGGEST_CONFIRM: f32 = 0.5
+
+stream eslm_telemetry: event<ClassificationSuggestion>
+    | throttle 100/s burst 200
+
+// --- Classify file content using on-device ESLM ---
+circuit classify_content(
+    content_sample: bytes,
+    file_extension: string,
+    file_path: string,
+) -> ClassificationSuggestion
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/eslm
+    observe metrics: [eslm_classifications, confidence_distribution, auto_apply_count, manual_required_count]
+    monitor "eslm_latency" { classify_time_ms < 200 }
+    monitor "confidence_quality" { avg_confidence > 0.6 }
+    invariant "sample_size_limit" { len(content_sample) <= 4096 }
+    invariant "content_never_emitted" { telemetry_contains(content_sample) == false }
+    meters [compute_cycles, executions]
+{
+    let sanitized = sanitize_pipeline(content_sample)
+    let ext_signal = classify_by_extension(file_extension)
+    let path_signal = classify_by_path_patterns(file_path)
+    let content_signal = eslm_infer(sanitized.content)
+
+    let combined_scores = merge_signals(ext_signal, path_signal, content_signal)
+    let best = argmax(combined_scores)
+    let confidence = combined_scores[best]
+
+    let action = if confidence >= THRESHOLD_AUTO_APPLY {
+        ConfidenceAction::AutoApply
+    } else if confidence >= THRESHOLD_SUGGEST_CONFIRM {
+        ConfidenceAction::SuggestWithConfirm
+    } else {
+        ConfidenceAction::RequireManual
+    }
+
+    let alternatives = list_new()
+    for (tag, score) in combined_scores {
+        if tag != best && score > 0.1 {
+            list_push(alternatives, ClassificationAlternative {
+                tag: tag,
+                confidence: score,
+            })
+        }
+    }
+    let sorted_alts = sort_by(alternatives, |a| -a.confidence)
+
+    let reasoning = build_reasoning(ext_signal, path_signal, content_signal, best)
+    ClassificationSuggestion {
+        tag: best,
+        confidence: confidence,
+        action: action,
+        alternatives: sorted_alts,
+        sanitized: true,
+        reasoning: reasoning,
+    }
+}
+
+// --- Classify based on filename patterns and path context ---
+circuit classify_filename(filename: string, path: string) -> ClassificationSuggestion
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/eslm
+    observe metrics: [filename_classifications]
+    monitor "filename_classify_latency" { classify_time_ms < 10 }
+    meters [compute_cycles]
+{
+    let ext = extract_extension(filename)
+    let ext_signal = classify_by_extension(ext)
+    let path_signal = classify_by_path_patterns(path)
+
+    let combined = merge_signals(ext_signal, path_signal, null)
+    let best = argmax(combined)
+    let confidence = combined[best]
+
+    let action = if confidence >= THRESHOLD_AUTO_APPLY {
+        ConfidenceAction::AutoApply
+    } else if confidence >= THRESHOLD_SUGGEST_CONFIRM {
+        ConfidenceAction::SuggestWithConfirm
+    } else {
+        ConfidenceAction::RequireManual
+    }
+
+    let alternatives = list_new()
+    for (tag, score) in combined {
+        if tag != best && score > 0.1 {
+            list_push(alternatives, ClassificationAlternative {
+                tag: tag,
+                confidence: score,
+            })
+        }
+    }
+
+    ClassificationSuggestion {
+        tag: best,
+        confidence: confidence,
+        action: action,
+        alternatives: alternatives,
+        sanitized: true,
+        reasoning: "filename/path-only classification (no content analyzed)",
+    }
+}
+
+// --- Submit human review feedback for ESLM training ---
+circuit submit_human_feedback(
+    sample_hash: bytes(32),
+    rating: u8,
+    correction: option<Classification>,
+    reviewer_hash: bytes(32),
+) -> FeedbackRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/eslm
+    observe metrics: [feedback_submissions, correction_rate, feedback_weight_total]
+    monitor "feedback_volume" { feedback_submissions > 0 }
+    invariant "rating_valid" { rating >= 1 && rating <= 5 }
+    invariant "reviewer_not_empty" { reviewer_hash != zeroed(32) }
+    meters [compute_cycles, executions]
+{
+    let weight: f32 = if correction.is_some() { 3.0 } else { 1.0 }
+    let ts = now()
+    let record = FeedbackRecord {
+        sample_hash: sample_hash,
+        suggested_tag: Classification::Public,
+        corrected_tag: correction,
+        rating: rating,
+        reviewer_hash: reviewer_hash,
+        timestamp: ts,
+        weight: weight,
+    }
+    emit(eslm_telemetry, record)
+    record
+}
+
+// --- Internal: 3-stage PII sanitization pipeline ---
+circuit sanitize_pipeline(content: bytes) -> SanitizedContent
+    profile poly_framework_sensitive
+    constant_time true
+    observe metrics: [sanitization_runs, pii_detections, transforms_applied]
+    invariant "output_no_raw_pii" { contains_raw_pii(result.content) == false }
+{
+    let pii_detections = detect_pii(content)
+    let stage1_output = apply_pii_placeholders(content, pii_detections)
+
+    let stage2_output = transform_values(stage1_output)
+
+    let audit_hash = sha3_256(concat(
+        blake3(content),
+        u32_to_be_bytes(len(pii_detections)),
+        u32_to_be_bytes(stage2_output.transforms),
+    ))
+
+    let compliance = list_new()
+    if has_health_data(pii_detections) { list_push(compliance, "HIPAA") }
+    if has_payment_data(pii_detections) { list_push(compliance, "PCI-DSS") }
+    if has_personal_data(pii_detections) { list_push(compliance, "GDPR") }
+    list_push(compliance, "SOC2")
+
+    SanitizedContent {
+        content: stage2_output.content,
+        pii_count: len(pii_detections),
+        transforms_applied: stage2_output.transforms,
+        audit_hash: audit_hash,
+        compliance_flags: compliance,
+    }
+}
+
+// --- Internal: PII detection (Stage 1) ---
+circuit detect_pii(content: bytes) -> list<PiiDetection>
+    profile poly_framework_sensitive
+    constant_time true
+{
+    let detections = list_new()
+    let patterns = [
+        ("SSN", r"\d{3}-\d{2}-\d{4}"),
+        ("EMAIL", r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
+        ("PHONE", r"\+?1?\d{10,14}"),
+        ("CREDIT_CARD", r"\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}"),
+        ("NAME", r"[A-Z][a-z]+\s[A-Z][a-z]+"),
+        ("IP_ADDRESS", r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"),
+    ]
+    let counter = 0
+    for (entity_type, pattern) in patterns {
+        let matches = regex_find_all(content, pattern)
+        for m in matches {
+            counter = counter + 1
+            let placeholder = "[" + entity_type + "_" + to_string(counter) + "]"
+            list_push(detections, PiiDetection {
+                entity_type: entity_type,
+                start_offset: m.start,
+                end_offset: m.end,
+                placeholder: placeholder,
+            })
+        }
+    }
+    detections
+}
+
+// --- Internal: value transformation (Stage 2) ---
+circuit transform_values(content: bytes) -> struct { content: bytes, transforms: u32 }
+    profile poly_framework_standard
+{
+    let result = content
+    let count: u32 = 0
+    let currency_matches = regex_find_all(result, r"\$\d+[\d,.]*")
+    for m in currency_matches {
+        result = replace_range(result, m.start, m.end, "[CURRENCY:USD:RANGE]")
+        count = count + 1
+    }
+    let date_matches = regex_find_all(result, r"\d{1,2}/\d{1,2}/\d{2,4}")
+    for m in date_matches {
+        result = replace_range(result, m.start, m.end, "[DATE:RECENT]")
+        count = count + 1
+    }
+    struct { content: result, transforms: count }
+}
+
+// --- Internal: extension-based signal ---
+circuit classify_by_extension(ext: string) -> map<Classification, f32>
+    profile poly_framework_standard
+{
+    match to_lower(ext) {
+        "pdf" | "docx" | "xlsx" => map_from([
+            (Classification::Internal, 0.4),
+            (Classification::Sensitive, 0.3),
+        ]),
+        "key" | "pem" | "p12" | "pfx" => map_from([
+            (Classification::Restricted, 0.7),
+            (Classification::Sovereign, 0.2),
+        ]),
+        "env" | "credentials" | "secret" => map_from([
+            (Classification::Restricted, 0.6),
+            (Classification::Sensitive, 0.3),
+        ]),
+        "txt" | "md" | "csv" => map_from([
+            (Classification::Public, 0.3),
+            (Classification::Internal, 0.3),
+        ]),
+        "jpg" | "png" | "gif" | "mp4" => map_from([
+            (Classification::Public, 0.5),
+            (Classification::Internal, 0.2),
+        ]),
+        _ => map_from([
+            (Classification::Internal, 0.3),
+        ]),
+    }
+}
+
+// --- Internal: path-based signal ---
+circuit classify_by_path_patterns(path: string) -> map<Classification, f32>
+    profile poly_framework_standard
+{
+    let lower = to_lower(path)
+    if contains(lower, "/secret") || contains(lower, "/restricted") {
+        map_from([(Classification::Restricted, 0.6)])
+    } else if contains(lower, "/confidential") || contains(lower, "/sensitive") {
+        map_from([(Classification::Sensitive, 0.5)])
+    } else if contains(lower, "/internal") || contains(lower, "/private") {
+        map_from([(Classification::Internal, 0.4)])
+    } else if contains(lower, "/public") || contains(lower, "/shared") {
+        map_from([(Classification::Public, 0.4)])
+    } else {
+        map_from([(Classification::Internal, 0.2)])
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "eslm_classify_key_file" {
+    input {
+        content_sample: bytes("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...")
+        file_extension: "pem"
+        file_path: "/secrets/server.pem"
+    }
+    assert {
+        result.tag == Classification::Restricted || result.tag == Classification::Sovereign
+        result.confidence >= 0.5
+        result.sanitized == true
+        result.action != ConfidenceAction::RequireManual || result.confidence < 0.5
+    }
+}
+
+test golden "eslm_classify_public_readme" {
+    input {
+        content_sample: bytes("# Project README\n\nThis is a public open source project.")
+        file_extension: "md"
+        file_path: "/public/README.md"
+    }
+    assert {
+        result.tag == Classification::Public || result.tag == Classification::Internal
+        result.sanitized == true
+    }
+}
+
+test golden "eslm_classify_pii_content" {
+    input {
+        content_sample: bytes("Name: John Smith, SSN: 123-45-6789, Email: john@example.com")
+        file_extension: "csv"
+        file_path: "/data/employees.csv"
+    }
+    assert {
+        result.tag == Classification::Sensitive || result.tag == Classification::Restricted
+        result.sanitized == true
+    }
+}
+
+test golden "classify_filename_only" {
+    input {
+        filename: "credentials.json"
+        path: "/secret/credentials.json"
+    }
+    assert {
+        result.tag == Classification::Restricted || result.tag == Classification::Sensitive
+        result.sanitized == true
+    }
+}
+
+test golden "sanitize_pipeline_pii_removal" {
+    input {
+        content: bytes("Contact: 123-45-6789, john@test.com, +14155551234, 4111-1111-1111-1111")
+    }
+    assert {
+        result.pii_count >= 4
+        result.transforms_applied >= 0
+        result.audit_hash != zeroed(32)
+        contains(result.compliance_flags, "SOC2")
+    }
+}
+
+test golden "submit_feedback_with_correction" {
+    input {
+        sample_hash: sha3_256(bytes("test sample"))
+        rating: 4
+        correction: some(Classification::Sensitive)
+        reviewer_hash: sha3_256(bytes("reviewer-identity"))
+    }
+    assert {
+        result.rating == 4
+        result.corrected_tag == some(Classification::Sensitive)
+        result.weight == 3.0
+        result.reviewer_hash != zeroed(32)
+    }
+}

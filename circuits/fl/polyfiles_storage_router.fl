@@ -1,0 +1,409 @@
+// Poly Files Storage Router — server-side scatter storage routing
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/router
+//     └── sub_lex session fan_in  ← per-upload session; only metrics/status fan up
+//
+// Validates manifest ML-DSA-87 signatures, enforces scatter policies per
+// classification level, distributes shards via VRF-directed scatter to
+// k-of-n storage nodes, records manifests, and updates file indices.
+
+import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import polykit_governance from "../../polykit/circuits/fl/polykit_governance.fl"
+
+type FileId = bytes(32)
+type ShardId = bytes(32)
+type ManifestHash = bytes(32)
+type UserId = bytes(16)
+
+type ScatterPolicy = enum {
+    Standard,     // k=3, n=5
+    Redundant,    // k=5, n=9
+    Paranoid,     // k=7, n=13
+}
+
+type Manifest = struct {
+    file_id: FileId,
+    owner_id: UserId,
+    file_size: u64,
+    chunk_count: u32,
+    scatter_policy: ScatterPolicy,
+    content_hash: bytes(32),
+    encryption_nonce: bytes(24),
+    classification: string,
+    signature: bytes(4627),
+    signing_pk: bytes(2592),
+    timestamp_ms: u64,
+}
+
+type Shard = struct {
+    shard_id: ShardId,
+    file_id: FileId,
+    shard_index: u32,
+    shard_size: u64,
+    node_id: bytes(32),
+    erasure_index: u32,
+    content_hash: bytes(32),
+}
+
+type ScatterResult = struct {
+    file_id: FileId,
+    shards_placed: u32,
+    shards_required: u32,
+    placement_proof: bytes(32),
+    vrf_seed: bytes(32),
+}
+
+type DownloadToken = struct {
+    file_id: FileId,
+    requester_id: UserId,
+    shard_locations: [ShardId; 16],
+    shard_count: u32,
+    expiry_ms: u64,
+    token_signature: bytes(4627),
+}
+
+type IndexEntry = struct {
+    file_id: FileId,
+    manifest_hash: ManifestHash,
+    file_size: u64,
+    version: u64,
+    updated_ms: u64,
+}
+
+state_machine file_lifecycle {
+    initial uploading
+
+    state uploading {
+        on chunks_encrypted -> scattering
+    }
+    state scattering {
+        on scatter_complete -> stored
+        on scatter_failed -> retry
+    }
+    state retry {
+        on retry_success -> scattering
+        on retry_exhausted -> failed
+    }
+    state stored {
+        on share_created -> shared
+        on version_created -> versioned
+        on deleted -> purging
+    }
+    state shared {
+        on share_revoked -> stored
+    }
+    state versioned {
+        on new_version -> stored
+    }
+    state purging {
+        on all_shards_deleted -> purged
+    }
+    state failed { terminal true }
+    state purged { terminal true }
+
+    anomaly "stuck_scattering" { duration_in(scattering) > 30_000 }
+    anomaly "retry_storm" { transitions_to(retry) > 5 in 60_000 }
+    anomaly "orphan_purge" { duration_in(purging) > 300_000 }
+}
+
+stream upload_events: event<Manifest>
+    | throttle 500/s burst 1000
+    | topic "polylabs.files.{user_id}.upload"
+    | retention permanent
+    | hash_chain true
+
+stream download_events: event<DownloadToken>
+    | throttle 1000/s burst 2000
+    | topic "polylabs.files.{user_id}.download"
+    | retention none
+
+stream confirm_events: event<ScatterResult>
+    | throttle 500/s burst 1000
+    | topic "polylabs.files.{user_id}.upload.confirm"
+    | retention ephemeral
+
+// --- Validate manifest signature and scatter policy ---
+circuit validate_manifest(manifest: Manifest) -> bool
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router
+    observe metrics: [manifest_validations, signature_checks, policy_violations]
+    monitor "validation_latency" { validation_time_ms < 20 }
+    invariant "manifest_signed" { len(manifest.signature) == 4627 }
+    invariant "valid_scatter_k" { scatter_k(manifest.scatter_policy) <= scatter_n(manifest.scatter_policy) }
+{
+    let sig_valid = polykit_identity::verify_signature(
+        manifest.signing_pk,
+        sha3_256(manifest.file_id ++ manifest.content_hash ++ u64_to_bytes(manifest.timestamp_ms)),
+        manifest.signature
+    )
+    if !sig_valid { return false }
+
+    let owner_derived = polykit_identity::derive_user_id(manifest.signing_pk)
+    if owner_derived != manifest.owner_id { return false }
+
+    let policy_valid = match manifest.scatter_policy {
+        ScatterPolicy::Standard => manifest.chunk_count >= 1,
+        ScatterPolicy::Redundant => manifest.chunk_count >= 1,
+        ScatterPolicy::Paranoid => manifest.chunk_count >= 1 && manifest.file_size > 0,
+    }
+    policy_valid
+}
+
+// --- Distribute shards via VRF to storage nodes ---
+circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32)]) -> ScatterResult
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router {
+        sub_lex session fan_in
+    }
+    meters [compute_cycles, bandwidth]
+    observe metrics: [shards_scattered, scatter_latency_ms, node_selections]
+    monitor "scatter_success_rate" { scatter_failures / scatter_attempts < 0.05 }
+    invariant "minimum_placement" { shards_placed >= scatter_k(manifest.scatter_policy) }
+    wasm_abi [eslite_insert, stream_emit, vrf_prove, now]
+{
+    let (k, n) = match manifest.scatter_policy {
+        ScatterPolicy::Standard => (3, 5),
+        ScatterPolicy::Redundant => (5, 9),
+        ScatterPolicy::Paranoid => (7, 13),
+    }
+
+    let vrf_seed = blake3(manifest.file_id ++ manifest.content_hash)
+    let mut placed = 0u32
+    let mut placements = []
+
+    parallel for i in 0..n {
+        let shard = shards[i]
+        let vrf_proof = vrf_prove(vrf_seed, u32_to_bytes(i))
+        let node_index = u64_from_bytes(vrf_proof) % len(node_pool)
+        let target_node = node_pool[node_index]
+        let ack = lattice_send(target_node, shard)
+        if ack {
+            placed = placed + 1
+            placements = append(placements, shard.shard_id)
+        }
+    }
+
+    let placement_proof = sha3_256(vrf_seed ++ u32_to_bytes(placed))
+
+    let result = ScatterResult {
+        file_id: manifest.file_id,
+        shards_placed: placed,
+        shards_required: k,
+        placement_proof: placement_proof,
+        vrf_seed: vrf_seed,
+    }
+    emit(confirm_events, result)
+    result
+}
+
+// --- Store validated manifest and record to version history ---
+circuit store_manifest(manifest: Manifest) -> ManifestHash
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router
+    observe metrics: [manifests_stored, storage_latency_ms]
+    monitor "store_throughput" { manifests_stored > 0 }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let manifest_hash = sha3_256(
+        manifest.file_id ++ manifest.content_hash ++ manifest.signature
+    )
+    eslite_insert("manifests", manifest_hash, manifest)
+    emit(upload_events, manifest)
+
+    let ts = now()
+    let entry = IndexEntry {
+        file_id: manifest.file_id,
+        manifest_hash: manifest_hash,
+        file_size: manifest.file_size,
+        version: 1,
+        updated_ms: ts,
+    }
+    eslite_insert("file_index", manifest.file_id, entry)
+
+    manifest_hash
+}
+
+// --- Route download request: verify ownership, locate shards, issue token ---
+circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: bytes(2592), requester_sig: bytes(4627)) -> DownloadToken
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router
+    meters [compute_cycles, bandwidth]
+    observe metrics: [downloads_routed, download_latency_ms, auth_failures]
+    monitor "download_auth_rate" { auth_failures / downloads_routed < 0.1 }
+    invariant "requester_authenticated" { sig_valid == true }
+    wasm_abi [eslite_query, now]
+{
+    let derived_id = polykit_identity::derive_user_id(requester_pk)
+    if derived_id != requester_id { return error("identity_mismatch") }
+
+    let sig_valid = polykit_identity::verify_signature(
+        requester_pk,
+        file_id,
+        requester_sig
+    )
+    if !sig_valid { return error("invalid_signature") }
+
+    let manifest = eslite_query("manifests", file_id)
+    let is_owner = manifest.owner_id == requester_id
+    let has_share = eslite_query("shares", file_id ++ requester_id) != null
+    if !is_owner && !has_share { return error("access_denied") }
+
+    let shards = eslite_query("shard_placements", file_id)
+    let ts = now()
+    let expiry = ts + 300_000
+
+    DownloadToken {
+        file_id: file_id,
+        requester_id: requester_id,
+        shard_locations: shards,
+        shard_count: len(shards),
+        expiry_ms: expiry,
+        token_signature: polykit_identity::sign_message(
+            eslite_query("server_sk"),
+            file_id ++ requester_id ++ u64_to_bytes(expiry)
+        ),
+    }
+}
+
+// --- Update file index entry (on version or metadata change) ---
+circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size: u64, new_version: u64) -> IndexEntry
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router
+    observe metrics: [index_updates]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let entry = IndexEntry {
+        file_id: file_id,
+        manifest_hash: new_manifest_hash,
+        file_size: new_size,
+        version: new_version,
+        updated_ms: ts,
+    }
+    eslite_insert("file_index", file_id, entry)
+    entry
+}
+
+// --- Purge file: delete all shards and manifest ---
+circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), owner_pk: bytes(2592)) -> bool
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/router
+    meters [compute_cycles]
+    observe metrics: [files_purged, purge_latency_ms, shard_deletions]
+    monitor "purge_completeness" { orphan_shards == 0 }
+    wasm_abi [eslite_delete, eslite_query, now]
+{
+    let derived = polykit_identity::derive_user_id(owner_pk)
+    if derived != owner_id { return false }
+
+    let sig_valid = polykit_identity::verify_signature(
+        owner_pk,
+        file_id ++ owner_id,
+        owner_sig
+    )
+    if !sig_valid { return false }
+
+    let shards = eslite_query("shard_placements", file_id)
+    parallel for shard in shards {
+        lattice_send(shard.node_id, { op: "delete", shard_id: shard.shard_id })
+        eslite_delete("shard_placements", shard.shard_id)
+    }
+
+    eslite_delete("manifests", file_id)
+    eslite_delete("file_index", file_id)
+    true
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "validate_and_store_manifest" {
+    steps {
+        let (signing_pk, signing_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(signing_pk)
+        let file_id = sha3_256(bytes("router-test-file"))
+        let content_hash = blake3(bytes("file content"))
+        let ts = 1700000000000u64
+
+        let sig_payload = sha3_256(file_id ++ content_hash ++ u64_to_bytes(ts))
+        let signature = polykit_identity::sign_message(signing_sk, sig_payload)
+
+        let manifest = Manifest {
+            file_id: file_id,
+            owner_id: owner_id,
+            file_size: 4096,
+            chunk_count: 1,
+            scatter_policy: ScatterPolicy::Standard,
+            content_hash: content_hash,
+            encryption_nonce: bytes(24){0x01},
+            classification: "Internal",
+            signature: signature,
+            signing_pk: signing_pk,
+            timestamp_ms: ts,
+        }
+
+        let valid = validate_manifest(manifest)
+        let stored_hash = store_manifest(manifest)
+    }
+    assert {
+        valid == true
+        stored_hash != zeroed(32)
+    }
+}
+
+test golden "scatter_shards_standard_policy" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("scatter-test"))
+
+        let manifest = Manifest {
+            file_id: file_id,
+            owner_id: owner_id,
+            file_size: 4194304,
+            chunk_count: 1,
+            scatter_policy: ScatterPolicy::Standard,
+            content_hash: blake3(bytes("content")),
+            encryption_nonce: bytes(24){0},
+            classification: "Internal",
+            signature: bytes(4627){0},
+            signing_pk: pk,
+            timestamp_ms: 1700000000000,
+        }
+
+        let shards = generate_test_shards(file_id, 5)
+        let node_pool = [bytes(32){0x01}, bytes(32){0x02}, bytes(32){0x03}, bytes(32){0x04}, bytes(32){0x05}]
+        let result = scatter_shards(manifest, shards, node_pool)
+    }
+    assert {
+        result.file_id == sha3_256(bytes("scatter-test"))
+        result.shards_required == 3
+        result.shards_placed >= 3
+        result.placement_proof != zeroed(32)
+        result.vrf_seed != zeroed(32)
+    }
+}
+
+test golden "route_download_authorized" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let user_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("download-test"))
+        let sig = polykit_identity::sign_message(sk, file_id)
+
+        let token = route_download(file_id, user_id, pk, sig)
+    }
+    assert {
+        token.file_id == sha3_256(bytes("download-test"))
+        token.requester_id == user_id
+        token.shard_count > 0
+        token.expiry_ms > 0
+    }
+}

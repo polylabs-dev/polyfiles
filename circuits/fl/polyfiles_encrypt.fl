@@ -1,0 +1,337 @@
+// PolyFiles Encrypt — Client-side AES-256-GCM file encryption with ML-KEM-1024 key wrapping
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/encrypt
+//   Per-file AES-256-GCM keys generated client-side in WASM.
+//   Keys wrapped with SPARK-derived ML-KEM-1024 user keys.
+//   Keys never leave the client boundary.
+//
+// Key flow:
+//   generate_file_key → random 32-byte AES-256-GCM key
+//   wrap_file_key     → ML-KEM-1024 encapsulate + AES-KW around file key
+//   encrypt_chunk     → AES-256-GCM(file_key, nonce=chunk_index, chunk)
+//   rewrap_file_key   → re-wrap for share recipient's ML-KEM-1024 key
+
+import polykit_identity
+import polykit_metering
+
+type FileKey = bytes(32)
+type ChunkIndex = u32
+type Nonce = bytes(12)
+
+type WrappedFileKey = struct {
+    kem_ciphertext: bytes(1568),
+    encrypted_file_key: bytes(48),
+    key_hash: bytes(32),
+}
+
+type EncryptedChunk = struct {
+    ciphertext: bytes,
+    nonce: Nonce,
+    tag: bytes(16),
+    chunk_index: ChunkIndex,
+    plaintext_hash: bytes(32),
+}
+
+type DecryptedChunk = struct {
+    plaintext: bytes,
+    chunk_index: ChunkIndex,
+    verified: bool,
+}
+
+type RewrapRequest = struct {
+    file_key: FileKey,
+    recipient_kem_public: bytes(1568),
+    sender_user_id: bytes(16),
+}
+
+// --- Generate random AES-256-GCM per-file key ---
+circuit generate_file_key() -> FileKey
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [file_key_generations, csprng_calls]
+    monitor "key_generation_entropy" { entropy_bits >= 256 }
+    invariant "key_nonzero" { result != zeroed(32) }
+    invariant "key_unique" { result != previous_result }
+    meters [compute_cycles]
+{
+    let key = csprng(32)
+    let check = sha3_256(key)
+    assert(check != zeroed(32), "degenerate key detected")
+    key
+}
+
+// --- Wrap per-file key with SPARK ML-KEM-1024 public key ---
+circuit wrap_file_key(file_key: FileKey, spark_kem_public: bytes(1568)) -> WrappedFileKey
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [key_wraps, mlkem_encaps_ops]
+    monitor "wrap_latency" { wrap_time_ms < 20 }
+    invariant "key_length_valid" { len(file_key) == 32 }
+    invariant "public_key_valid" { len(spark_kem_public) == 1568 }
+    meters [compute_cycles, hashes]
+{
+    let kem_result = mlkem_encaps(spark_kem_public)
+    let shared_secret = kem_result.shared_secret
+    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let encrypted_file_key = aes_kw_wrap(wrapping_key, file_key)
+    let key_hash = blake3(file_key)
+    WrappedFileKey {
+        kem_ciphertext: kem_result.ciphertext,
+        encrypted_file_key: encrypted_file_key,
+        key_hash: key_hash,
+    }
+}
+
+// --- Unwrap per-file key with SPARK ML-KEM-1024 private key ---
+circuit unwrap_file_key(wrapped: WrappedFileKey, spark_kem_private: bytes(3168)) -> FileKey
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [key_unwraps, mlkem_decaps_ops]
+    monitor "unwrap_latency" { unwrap_time_ms < 20 }
+    invariant "private_key_valid" { len(spark_kem_private) == 3168 }
+    meters [compute_cycles, hashes]
+{
+    let shared_secret = mlkem_decaps(spark_kem_private, wrapped.kem_ciphertext)
+    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let file_key = aes_kw_unwrap(wrapping_key, wrapped.encrypted_file_key)
+    let check_hash = blake3(file_key)
+    assert(check_hash == wrapped.key_hash, "key integrity check failed")
+    file_key
+}
+
+// --- Encrypt a single chunk with AES-256-GCM ---
+circuit encrypt_chunk(plaintext: bytes, file_key: FileKey, chunk_index: ChunkIndex) -> EncryptedChunk
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [chunk_encryptions, bytes_encrypted, aes_gcm_ops]
+    monitor "encrypt_throughput" { bytes_per_sec > 100_000_000 }
+    invariant "chunk_not_empty" { len(plaintext) > 0 }
+    invariant "chunk_max_size" { len(plaintext) <= 4_194_304 }
+    meters [compute_cycles, bandwidth]
+{
+    let plaintext_hash = sha3_256(plaintext)
+    let nonce = build_nonce(chunk_index)
+    let (ciphertext, tag) = aes_gcm_encrypt(file_key, nonce, plaintext, chunk_index_to_aad(chunk_index))
+    EncryptedChunk {
+        ciphertext: ciphertext,
+        nonce: nonce,
+        tag: tag,
+        chunk_index: chunk_index,
+        plaintext_hash: plaintext_hash,
+    }
+}
+
+// --- Decrypt a single chunk with AES-256-GCM ---
+circuit decrypt_chunk(encrypted: EncryptedChunk, file_key: FileKey) -> DecryptedChunk
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [chunk_decryptions, bytes_decrypted, aes_gcm_ops]
+    monitor "decrypt_throughput" { bytes_per_sec > 100_000_000 }
+    invariant "tag_present" { len(encrypted.tag) == 16 }
+    meters [compute_cycles, bandwidth]
+{
+    let aad = chunk_index_to_aad(encrypted.chunk_index)
+    let plaintext = aes_gcm_decrypt(file_key, encrypted.nonce, encrypted.ciphertext, aad, encrypted.tag)
+    let verify_hash = sha3_256(plaintext)
+    let verified = verify_hash == encrypted.plaintext_hash
+    DecryptedChunk {
+        plaintext: plaintext,
+        chunk_index: encrypted.chunk_index,
+        verified: verified,
+    }
+}
+
+// --- Re-wrap file key for a share recipient ---
+circuit rewrap_file_key(file_key: FileKey, recipient_kem_public: bytes(1568)) -> WrappedFileKey
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/encrypt
+    constant_time true
+    observe metrics: [key_rewraps, share_ops, mlkem_encaps_ops]
+    monitor "rewrap_latency" { rewrap_time_ms < 25 }
+    invariant "recipient_key_valid" { len(recipient_kem_public) == 1568 }
+    invariant "file_key_valid" { len(file_key) == 32 }
+    meters [compute_cycles, hashes]
+{
+    let kem_result = mlkem_encaps(recipient_kem_public)
+    let shared_secret = kem_result.shared_secret
+    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let encrypted_file_key = aes_kw_wrap(wrapping_key, file_key)
+    let key_hash = blake3(file_key)
+    WrappedFileKey {
+        kem_ciphertext: kem_result.ciphertext,
+        encrypted_file_key: encrypted_file_key,
+        key_hash: key_hash,
+    }
+}
+
+// --- Internal: build 12-byte nonce from chunk index ---
+circuit build_nonce(chunk_index: ChunkIndex) -> Nonce
+    profile poly_framework_sensitive
+    constant_time true
+{
+    let index_bytes = u32_to_be_bytes(chunk_index)
+    let random_prefix = csprng(8)
+    concat(random_prefix, index_bytes)
+}
+
+// --- Internal: build AAD from chunk index ---
+circuit chunk_index_to_aad(chunk_index: ChunkIndex) -> bytes
+    profile poly_framework_standard
+{
+    let prefix = "polyfiles-chunk-aad-v1:"
+    concat(prefix, u32_to_be_bytes(chunk_index))
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "encrypt_decrypt_roundtrip" {
+    steps {
+        let file_key = generate_file_key()
+        let plaintext = bytes("Confidential file content for encryption roundtrip test.")
+        let encrypted = encrypt_chunk(plaintext, file_key, 0)
+        let decrypted = decrypt_chunk(encrypted, file_key)
+    }
+    assert {
+        decrypted.plaintext == plaintext
+        decrypted.verified == true
+        decrypted.chunk_index == 0
+        encrypted.tag != zeroed(16)
+        encrypted.nonce != zeroed(12)
+    }
+}
+
+test golden "wrap_unwrap_key_roundtrip" {
+    steps {
+        let file_key = generate_file_key()
+        let (kem_public, kem_private) = mlkem_keygen()
+        let wrapped = wrap_file_key(file_key, kem_public)
+        let unwrapped = unwrap_file_key(wrapped, kem_private)
+    }
+    assert {
+        unwrapped == file_key
+        wrapped.kem_ciphertext != zeroed(1568)
+        wrapped.encrypted_file_key != zeroed(48)
+        wrapped.key_hash == blake3(file_key)
+    }
+}
+
+test golden "rewrap_for_recipient" {
+    steps {
+        let file_key = generate_file_key()
+        let (recipient_pk, recipient_sk) = mlkem_keygen()
+        let rewrapped = rewrap_file_key(file_key, recipient_pk)
+        let recovered = unwrap_file_key(rewrapped, recipient_sk)
+    }
+    assert {
+        recovered == file_key
+        rewrapped.key_hash == blake3(file_key)
+    }
+}
+
+kat_vector "aes_gcm_256_empty_plaintext" {
+    function: "aes_gcm_encrypt"
+    input: {
+        key: hex("0000000000000000000000000000000000000000000000000000000000000000")
+        nonce: hex("000000000000000000000000")
+        plaintext: bytes("")
+        aad: bytes("")
+    }
+    expected: {
+        ciphertext: bytes("")
+        tag: hex("530f8afbc74536b9a963b4f1c4cb738b")
+    }
+}
+
+kat_vector "aes_gcm_256_nist_test_case" {
+    function: "aes_gcm_encrypt"
+    input: {
+        key: hex("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+        nonce: hex("cafebabefacedbaddecaf888")
+        plaintext: hex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+        aad: hex("feedfacedeadbeeffeedfacedeadbeefabaddad2")
+    }
+    expected: {
+        ciphertext: hex("522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662")
+        tag: hex("76fc6ece0f4e1768cddf8853bb2d551b")
+    }
+}
+
+kat_vector "sha3_256_key_check" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "blake3_key_integrity" {
+    function: "blake3"
+    input: bytes("")
+    expected: hex("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}
+
+kat_vector "mlkem_1024_encaps_decaps" {
+    function: "mlkem_encaps/mlkem_decaps"
+    description: "ML-KEM-1024 roundtrip: encapsulate with pk, decapsulate with sk, shared secrets must match"
+    input: {
+        seed: hex("7c9935a0b07694aa0c6d10e4db6b1add2fd81a25ccb148032dcd739936737f2db505d911a85c8eae0842e45d2f47907e2f0da847c0be7e7b7f1b0da6b2cc8ce0")
+    }
+    expected: {
+        roundtrip: true
+        shared_secret_length: 32
+    }
+}
+
+kat_vector "hkdf_sha3_polyfiles_context" {
+    function: "hkdf_sha3"
+    input: {
+        ikm: hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
+        info: "polyfiles-keywrap-v1"
+        length: 32
+    }
+    expected: {
+        output_length: 32
+        output_nonzero: true
+    }
+}
+
+fuzz_target "encrypt_chunk_fuzz" {
+    inputs {
+        plaintext: bytes(1..4_194_304)
+        key: bytes(32)
+        chunk_index: u32(0..1_000_000)
+    }
+    assert {
+        no_panic
+        constant_time true
+        result.ciphertext != plaintext
+        result.tag != zeroed(16)
+    }
+}
+
+fuzz_target "wrap_unwrap_fuzz" {
+    inputs {
+        file_key: bytes(32)
+        kem_public: bytes(1568)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "key_generation_fuzz" {
+    inputs {
+        iterations: u32(1..1000)
+    }
+    assert {
+        no_panic
+        constant_time true
+        all_unique(results)
+        no_result_is_zero
+    }
+}

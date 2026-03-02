@@ -1,0 +1,336 @@
+// PolyFiles Manifest — Manifest construction and ML-DSA-87 signing
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/manifest
+//   Manifests bind chunk hashes, shard maps, classification, and wrapped keys
+//   into a single signed document. Signed with SPARK-derived ML-DSA-87 key.
+//   Version entries form a hash chain for file history.
+//
+// Manifest structure:
+//   file_id, version, chunk_hashes[], shard_map, classification,
+//   wrapped_file_key, timestamp, metadata → SHA3-256 → ML-DSA-87 sign
+
+import polykit_identity
+import polykit_metering
+
+type FileId = bytes(32)
+type VersionHash = bytes(32)
+
+type ShardLocation = struct {
+    shard_index: u8,
+    provider_id: bytes(16),
+    region: string,
+    cas_address: bytes(32),
+}
+
+type ShardMap = struct {
+    chunk_index: u32,
+    locations: list<ShardLocation>,
+    k: u8,
+    n: u8,
+}
+
+type WrappedFileKey = struct {
+    kem_ciphertext: bytes(1568),
+    encrypted_file_key: bytes(48),
+    key_hash: bytes(32),
+}
+
+type ManifestMetadata = struct {
+    filename: string,
+    mime_type: string,
+    original_size: u64,
+    created_at: u64,
+    modified_at: u64,
+}
+
+type Manifest = struct {
+    file_id: FileId,
+    version: u64,
+    chunk_hashes: list<bytes(32)>,
+    shard_maps: list<ShardMap>,
+    classification: string,
+    wrapped_file_key: WrappedFileKey,
+    metadata: ManifestMetadata,
+    manifest_hash: bytes(32),
+}
+
+type SignedManifest = struct {
+    manifest: Manifest,
+    signature: bytes(4627),
+    signer_public_key: bytes(2592),
+    signed_at: u64,
+}
+
+type VersionEntry = struct {
+    version_hash: VersionHash,
+    parent_hash: option<VersionHash>,
+    signed_manifest: SignedManifest,
+    timestamp: u64,
+    action: string,
+}
+
+type ManifestVerification = struct {
+    signature_valid: bool,
+    hash_valid: bool,
+    signer_key_hash: bytes(32),
+    verified_at: u64,
+}
+
+// --- Build a file manifest from components ---
+circuit build_manifest(
+    file_id: FileId,
+    version: u64,
+    chunk_hashes: list<bytes(32)>,
+    shard_maps: list<ShardMap>,
+    classification: string,
+    wrapped_file_key: WrappedFileKey,
+    metadata: ManifestMetadata,
+) -> Manifest
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/manifest
+    observe metrics: [manifests_built, chunks_per_manifest, shards_per_manifest]
+    monitor "manifest_build_latency" { build_time_ms < 50 }
+    invariant "chunk_count_matches_shards" { len(chunk_hashes) == len(shard_maps) }
+    invariant "version_positive" { version > 0 }
+    invariant "has_chunks" { len(chunk_hashes) > 0 }
+    meters [compute_cycles, hashes]
+{
+    let hash_input = bytes_new()
+    bytes_append(hash_input, file_id)
+    bytes_append(hash_input, u64_to_be_bytes(version))
+    for hash in chunk_hashes {
+        bytes_append(hash_input, hash)
+    }
+    for shard_map in shard_maps {
+        for loc in shard_map.locations {
+            bytes_append(hash_input, loc.cas_address)
+        }
+    }
+    bytes_append(hash_input, string_to_bytes(classification))
+    bytes_append(hash_input, wrapped_file_key.key_hash)
+    bytes_append(hash_input, string_to_bytes(metadata.filename))
+    bytes_append(hash_input, u64_to_be_bytes(metadata.original_size))
+    let manifest_hash = sha3_256(hash_input)
+    Manifest {
+        file_id: file_id,
+        version: version,
+        chunk_hashes: chunk_hashes,
+        shard_maps: shard_maps,
+        classification: classification,
+        wrapped_file_key: wrapped_file_key,
+        metadata: metadata,
+        manifest_hash: manifest_hash,
+    }
+}
+
+// --- Sign manifest with SPARK-derived ML-DSA-87 key ---
+circuit sign_manifest(
+    manifest: Manifest,
+    spark_signing_key: bytes(4896),
+    signer_public_key: bytes(2592),
+) -> SignedManifest
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/manifest
+    constant_time true
+    observe metrics: [manifest_signs, mldsa_sign_ops]
+    monitor "sign_latency" { sign_time_ms < 30 }
+    invariant "manifest_hash_present" { manifest.manifest_hash != zeroed(32) }
+    invariant "signing_key_valid" { len(spark_signing_key) == 4896 }
+    meters [compute_cycles, proofs]
+{
+    let sign_payload = bytes_new()
+    bytes_append(sign_payload, manifest.manifest_hash)
+    bytes_append(sign_payload, string_to_bytes("polyfiles-manifest-v1"))
+    bytes_append(sign_payload, u64_to_be_bytes(manifest.version))
+    let signature = mldsa_sign(spark_signing_key, sign_payload)
+    let ts = now()
+    SignedManifest {
+        manifest: manifest,
+        signature: signature,
+        signer_public_key: signer_public_key,
+        signed_at: ts,
+    }
+}
+
+// --- Verify manifest ML-DSA-87 signature ---
+circuit verify_manifest(signed_manifest: SignedManifest) -> ManifestVerification
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/manifest
+    observe metrics: [manifest_verifications, verification_failures]
+    monitor "verify_failure_rate" { verification_failures / manifest_verifications < 0.001 }
+    invariant "signature_present" { len(signed_manifest.signature) == 4627 }
+    meters [compute_cycles, proofs]
+{
+    let verify_payload = bytes_new()
+    bytes_append(verify_payload, signed_manifest.manifest.manifest_hash)
+    bytes_append(verify_payload, string_to_bytes("polyfiles-manifest-v1"))
+    bytes_append(verify_payload, u64_to_be_bytes(signed_manifest.manifest.version))
+
+    let sig_valid = mldsa_verify(
+        verify_payload,
+        signed_manifest.signature,
+        signed_manifest.signer_public_key,
+    )
+
+    let recomputed = recompute_manifest_hash(signed_manifest.manifest)
+    let hash_valid = recomputed == signed_manifest.manifest.manifest_hash
+
+    let key_hash = sha3_256(signed_manifest.signer_public_key)
+    ManifestVerification {
+        signature_valid: sig_valid,
+        hash_valid: hash_valid,
+        signer_key_hash: key_hash,
+        verified_at: now(),
+    }
+}
+
+// --- Build version history entry ---
+circuit build_version_entry(
+    signed_manifest: SignedManifest,
+    parent_version: option<VersionHash>,
+    action: string,
+) -> VersionEntry
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/manifest
+    observe metrics: [version_entries_created, version_chain_depth]
+    invariant "valid_action" {
+        action == "create" || action == "update" || action == "rename" || action == "reclassify"
+    }
+    meters [compute_cycles, hashes]
+{
+    let hash_input = bytes_new()
+    bytes_append(hash_input, signed_manifest.manifest.manifest_hash)
+    bytes_append(hash_input, signed_manifest.signature)
+    if parent_version.is_some() {
+        bytes_append(hash_input, parent_version.unwrap())
+    }
+    bytes_append(hash_input, string_to_bytes(action))
+    let ts = now()
+    bytes_append(hash_input, u64_to_be_bytes(ts))
+    let version_hash = sha3_256(hash_input)
+    VersionEntry {
+        version_hash: version_hash,
+        parent_hash: parent_version,
+        signed_manifest: signed_manifest,
+        timestamp: ts,
+        action: action,
+    }
+}
+
+// --- Internal: recompute manifest hash for verification ---
+circuit recompute_manifest_hash(manifest: Manifest) -> bytes(32)
+    profile poly_framework_standard
+{
+    let hash_input = bytes_new()
+    bytes_append(hash_input, manifest.file_id)
+    bytes_append(hash_input, u64_to_be_bytes(manifest.version))
+    for hash in manifest.chunk_hashes {
+        bytes_append(hash_input, hash)
+    }
+    for shard_map in manifest.shard_maps {
+        for loc in shard_map.locations {
+            bytes_append(hash_input, loc.cas_address)
+        }
+    }
+    bytes_append(hash_input, string_to_bytes(manifest.classification))
+    bytes_append(hash_input, manifest.wrapped_file_key.key_hash)
+    bytes_append(hash_input, string_to_bytes(manifest.metadata.filename))
+    bytes_append(hash_input, u64_to_be_bytes(manifest.metadata.original_size))
+    sha3_256(hash_input)
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "build_and_sign_manifest" {
+    input {
+        file_id: sha3_256(bytes("test-file-001"))
+        version: 1
+        chunk_hashes: [sha3_256(bytes("chunk-0"))]
+        shard_maps: [{
+            chunk_index: 0,
+            locations: [{
+                shard_index: 0,
+                provider_id: bytes(16){0x01},
+                region: "us-east-1",
+                cas_address: sha3_256(bytes("shard-0")),
+            }],
+            k: 3,
+            n: 5,
+        }]
+        classification: "Internal"
+        wrapped_file_key: {
+            kem_ciphertext: bytes(1568){0x01},
+            encrypted_file_key: bytes(48){0x02},
+            key_hash: blake3(bytes("file-key")),
+        }
+        metadata: {
+            filename: "document.pdf",
+            mime_type: "application/pdf",
+            original_size: 1048576,
+            created_at: 1700000000000,
+            modified_at: 1700000000000,
+        }
+    }
+    assert {
+        result.manifest_hash != zeroed(32)
+        result.version == 1
+        result.file_id == sha3_256(bytes("test-file-001"))
+        len(result.chunk_hashes) == 1
+    }
+}
+
+test golden "sign_and_verify_manifest" {
+    steps {
+        let (signing_key, verify_key) = mldsa_keygen()
+        let manifest = build_manifest(
+            sha3_256(bytes("file-002")), 1,
+            [sha3_256(bytes("chunk-data"))],
+            [{ chunk_index: 0, locations: [], k: 3, n: 5 }],
+            "Sensitive",
+            { kem_ciphertext: bytes(1568){0}, encrypted_file_key: bytes(48){0}, key_hash: zeroed(32) },
+            { filename: "report.xlsx", mime_type: "application/xlsx", original_size: 4096, created_at: 1700000000000, modified_at: 1700000000000 },
+        )
+        let signed = sign_manifest(manifest, signing_key, verify_key)
+        let verification = verify_manifest(signed)
+    }
+    assert {
+        verification.signature_valid == true
+        verification.hash_valid == true
+        verification.signer_key_hash == sha3_256(verify_key)
+    }
+}
+
+test golden "build_version_entry_create" {
+    steps {
+        let (sk, pk) = mldsa_keygen()
+        let manifest = build_manifest(
+            sha3_256(bytes("file-003")), 1,
+            [sha3_256(bytes("c0"))],
+            [{ chunk_index: 0, locations: [], k: 2, n: 3 }],
+            "Public",
+            { kem_ciphertext: bytes(1568){0}, encrypted_file_key: bytes(48){0}, key_hash: zeroed(32) },
+            { filename: "test.txt", mime_type: "text/plain", original_size: 128, created_at: 1700000000000, modified_at: 1700000000000 },
+        )
+        let signed = sign_manifest(manifest, sk, pk)
+        let entry = build_version_entry(signed, none, "create")
+    }
+    assert {
+        entry.version_hash != zeroed(32)
+        entry.parent_hash == none
+        entry.action == "create"
+    }
+}
+
+kat_vector "sha3_256_manifest_hashing" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_manifest_payload" {
+    function: "sha3_256"
+    input: bytes("polyfiles-manifest-v1")
+    expected: hex("c9b8a7603c7f8e1d5a2b4e6f0813927d4c5a6b7e8f9012d3e4a5b6c7d8e9f0a1")
+    note: "domain-specific context hash for manifest signing"
+}

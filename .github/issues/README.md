@@ -1,9 +1,10 @@
-# Poly Data — GitHub Issues
+# Poly Files — GitHub Issues
 
-> **GitHub org**: [polylabs-dev](https://github.com/polylabs-dev) | **Repo**: [polylabs-dev/polydata](https://github.com/polylabs-dev/polydata)
-> **Architecture**: [ARCHITECTURE.md v2.0](../../docs/ARCHITECTURE.md)
+> **GitHub org**: [polylabs-dev](https://github.com/polylabs-dev) | **Repo**: [polylabs-dev/polyfiles](https://github.com/polylabs-dev/polyfiles)
+> **Architecture**: [ARCHITECTURE.md](../../docs/ARCHITECTURE.md)
+> **Note**: poly-git issues (#023-#028) have been migrated to the [Poly Git repo](../../../polygit/.github/issues/README.md).
 
-## Epic 01: Phase 1 — Core Storage (Q2 2026) — [#1](https://github.com/polylabs-dev/polydata/issues/1)
+## Epic 01: Phase 1 — Core Storage (Q2 2026) — [#1](https://github.com/polylabs-dev/polyfiles/issues/1)
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -15,13 +16,13 @@
 | 006 | File download flow (collect → reassemble → decrypt → verify) | Open | P0 |
 | 007 | Classification tags: PUBLIC through SOVEREIGN (manual + inherited) | Open | P0 |
 | 008 | `poly-data-storage-router` server circuit (scatter 3-of-5) | Open | P0 |
-| 009 | ESLite client-side state (`/polydata/files/*`, `/polydata/index/*`, `/polydata/offline/*`) | Open | P0 |
+| 009 | ESLite client-side state (`/polyfiles/files/*`, `/polyfiles/index/*`, `/polyfiles/offline/*`) | Open | P0 |
 | 010 | Tauri desktop app using `@estream/sdk-browser` (wire-protocol-only) | Open | P0 |
 | 011 | StreamSight L0 metrics on all circuits | Open | P0 |
 | 012 | StreamSight baseline gate integration | Open | P0 |
 | 013 | `poly-data-metering` server circuit (8-dimension) | Open | P1 |
 
-## Epic 02: Phase 2 — Collaboration (Q3 2026) — [#2](https://github.com/polylabs-dev/polydata/issues/2)
+## Epic 02: Phase 2 — Collaboration (Q3 2026) — [#2](https://github.com/polylabs-dev/polyfiles/issues/2)
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -35,18 +36,10 @@
 | 021 | ESLM auto-classification circuit (`poly-data-eslm-classify`) | Open | P0 |
 | 022 | `.polyclassification` file support | Open | P1 |
 
-## Epic 03: Phase 3 — poly-git (Q4 2026) — [#3](https://github.com/polylabs-dev/polydata/issues/3)
+## Epic 03: Phase 3 — Enterprise (Q1 2027) — [#4](https://github.com/polylabs-dev/polyfiles/issues/4)
 
-| # | Issue | Status | Priority |
-|---|-------|--------|----------|
-| 023 | `poly-git` Git remote helper scaffold | Open | P0 |
-| 024 | PQ-signed commits (SPARK ML-DSA-87) | Open | P0 |
-| 025 | `.polyclassification` per path in repos | Open | P1 |
-| 026 | Git LFS scatter integration | Open | P1 |
-| 027 | Git push/pull/clone via scatter storage | Open | P0 |
-| 028 | StreamSight L2/L3 detailed traces | Open | P1 |
+> poly-git issues (#023-#028) migrated to [polygit/.github/issues/README.md](../../../polygit/.github/issues/README.md)
 
-## Epic 04: Phase 4 — Enterprise (Q1 2027) — [#4](https://github.com/polylabs-dev/polydata/issues/4)
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -59,7 +52,7 @@
 | 035 | ESN-AI capacity planning and anomaly correlation | Open | P1 |
 | 036 | ESLM-powered semantic search | Open | P2 |
 
-## Epic 05: Console Widgets — [#5](https://github.com/polylabs-dev/polydata/issues/5)
+## Epic 04: Console Widgets — [#5](https://github.com/polylabs-dev/polyfiles/issues/5)
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -67,7 +60,7 @@
 | 038 | ESLM management widgets (5 widgets: accuracy, review queue, feedback, ESN-AI recommendations, sanitization log) | Open | P0 |
 | 039 | Human-in-the-loop review queue (accept/override/flag low-confidence classifications) | Open | P0 |
 | 040 | 3-stage sanitization pipeline integration (PII detect → value transform → audit) | Open | P0 |
-| 041 | RBAC: `polydata-operator`, `polydata-viewer`, `polydata-compliance` roles | Open | P1 |
+| 041 | RBAC: `polyfiles-operator`, `polyfiles-viewer`, `polyfiles-compliance` roles | Open | P1 |
 | 042 | Widget theming per eStream design system | Open | P1 |
 
 ## Upstream Dependencies

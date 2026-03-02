@@ -1,0 +1,364 @@
+// Poly Files Share — ACL-based folder sharing and ephemeral link distribution
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/share
+//     └── sub_lex acl fan_in     ← per-share ACL; only status/metrics fan up
+//     └── sub_lex ephemeral fan_in ← ephemeral links; auto-expire, no content fan-up
+//
+// Shares are SPARK DID-addressed: the owner signs an ACL grant that names
+// the recipient by their ML-DSA-87 public key hash. The recipient proves
+// ownership during accept_share via signature challenge. Ephemeral links
+// use a time-bounded HMAC token with no DID requirement.
+
+import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import polykit_governance from "../../polykit/circuits/fl/polykit_governance.fl"
+
+type ShareId = bytes(32)
+type FileId = bytes(32)
+type FolderId = bytes(32)
+type UserId = bytes(16)
+
+type SharePermission = enum {
+    ReadOnly,
+    ReadWrite,
+    Admin,
+}
+
+type ShareTarget = enum {
+    File { file_id: FileId },
+    Folder { folder_id: FolderId },
+}
+
+type ShareGrant = struct {
+    share_id: ShareId,
+    owner_id: UserId,
+    recipient_id: UserId,
+    target: ShareTarget,
+    permission: SharePermission,
+    owner_signature: bytes(4627),
+    owner_pk: bytes(2592),
+    created_ms: u64,
+    expires_ms: u64,
+}
+
+type EphemeralLink = struct {
+    link_id: bytes(32),
+    file_id: FileId,
+    owner_id: UserId,
+    hmac_token: bytes(32),
+    max_downloads: u32,
+    downloads_remaining: u32,
+    created_ms: u64,
+    expires_ms: u64,
+}
+
+type ShareAcceptance = struct {
+    share_id: ShareId,
+    recipient_id: UserId,
+    recipient_signature: bytes(4627),
+    accepted_ms: u64,
+}
+
+type ShareStatus = struct {
+    share_id: ShareId,
+    state: string,
+    permission: SharePermission,
+    accepted: bool,
+    revoked: bool,
+}
+
+state_machine share_lifecycle {
+    initial pending
+
+    state pending {
+        on acl_signed -> validating
+    }
+    state validating {
+        on signature_valid -> active
+        on signature_invalid -> rejected
+    }
+    state active {
+        on expired -> expired_state
+        on owner_revoked -> revoked
+    }
+    state revoked { terminal true }
+    state rejected { terminal true }
+    state expired_state { terminal true }
+
+    anomaly "share_never_accepted" { duration_in(active) > 604_800_000 && !accepted }
+    anomaly "rapid_revocation" { duration_in(active) < 5_000 }
+    anomaly "validation_stuck" { duration_in(validating) > 10_000 }
+}
+
+stream acl_events: event<ShareGrant>
+    | throttle 200/s burst 500
+    | topic "polylabs.files.{user_id}.share.acl"
+    | retention permanent
+    | hash_chain true
+
+stream incoming_events: event<ShareGrant>
+    | throttle 200/s burst 500
+    | topic "polylabs.files.{recipient_id}.share.incoming"
+    | retention policy_based
+
+stream ephemeral_events: event<EphemeralLink>
+    | throttle 100/s burst 200
+    | topic "polylabs.files.{user_id}.share.ephemeral"
+    | retention ephemeral
+
+// --- Create a new share grant (owner-initiated) ---
+circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), recipient_id: UserId, target: ShareTarget, permission: SharePermission, ttl_ms: u64) -> ShareGrant
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/share {
+        sub_lex acl fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [shares_created, share_types, permission_levels]
+    monitor "share_creation_rate" { shares_created > 0 }
+    invariant "owner_authenticated" { owner_derived == owner_id }
+    invariant "non_self_share" { owner_id != recipient_id }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let owner_derived = polykit_identity::derive_user_id(owner_pk)
+    if owner_derived != owner_id { return error("owner_identity_mismatch") }
+
+    let ts = now()
+    let share_id = sha3_256(owner_id ++ recipient_id ++ ts_to_bytes(ts))
+
+    let target_bytes = match target {
+        ShareTarget::File { file_id } => file_id,
+        ShareTarget::Folder { folder_id } => folder_id,
+    }
+
+    let payload = share_id ++ recipient_id ++ target_bytes ++ u64_to_bytes(ts)
+    let signature = polykit_identity::sign_message(owner_sk, payload)
+
+    let grant = ShareGrant {
+        share_id: share_id,
+        owner_id: owner_id,
+        recipient_id: recipient_id,
+        target: target,
+        permission: permission,
+        owner_signature: signature,
+        owner_pk: owner_pk,
+        created_ms: ts,
+        expires_ms: ts + ttl_ms,
+    }
+
+    eslite_insert("shares", share_id, grant)
+    eslite_insert("share_index", owner_id ++ share_id, grant)
+    eslite_insert("share_index", recipient_id ++ share_id, grant)
+    emit(acl_events, grant)
+    emit(incoming_events, grant)
+
+    polykit_metering::record_usage(owner_id, "share", {
+        executions: 0, hashes: 1, bandwidth: 0, storage: 0,
+        observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    grant
+}
+
+// --- Validate an incoming share grant (server-side) ---
+circuit validate_share(grant: ShareGrant) -> bool
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/share
+    observe metrics: [share_validations, validation_failures, signature_checks]
+    monitor "validation_accuracy" { validation_failures / share_validations < 0.01 }
+    invariant "signature_present" { len(grant.owner_signature) == 4627 }
+{
+    let owner_derived = polykit_identity::derive_user_id(grant.owner_pk)
+    if owner_derived != grant.owner_id { return false }
+
+    let target_bytes = match grant.target {
+        ShareTarget::File { file_id } => file_id,
+        ShareTarget::Folder { folder_id } => folder_id,
+    }
+    let payload = grant.share_id ++ grant.recipient_id ++ target_bytes ++ u64_to_bytes(grant.created_ms)
+    let sig_valid = polykit_identity::verify_signature(
+        grant.owner_pk, payload, grant.owner_signature
+    )
+    if !sig_valid { return false }
+
+    let ts = now()
+    if grant.expires_ms > 0 && ts > grant.expires_ms { return false }
+
+    let target_exists = match grant.target {
+        ShareTarget::File { file_id } => eslite_query("manifests", file_id) != null,
+        ShareTarget::Folder { folder_id } => eslite_query("folders", folder_id) != null,
+    }
+    target_exists
+}
+
+// --- Revoke an active share (owner only) ---
+circuit revoke_share(share_id: ShareId, owner_id: UserId, owner_pk: bytes(2592), owner_sig: bytes(4627)) -> bool
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/share
+    observe metrics: [shares_revoked, revoke_latency_ms]
+    monitor "revoke_success" { shares_revoked > 0 }
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let derived = polykit_identity::derive_user_id(owner_pk)
+    if derived != owner_id { return false }
+
+    let sig_valid = polykit_identity::verify_signature(owner_pk, share_id, owner_sig)
+    if !sig_valid { return false }
+
+    let grant = eslite_query("shares", share_id)
+    if grant == null { return false }
+    if grant.owner_id != owner_id { return false }
+
+    let ts = now()
+    eslite_insert("shares", share_id, { ...grant, revoked: true, revoked_ms: ts })
+    eslite_insert("revocation_log", share_id, { share_id: share_id, revoked_ms: ts })
+    true
+}
+
+// --- Create ephemeral download link (no DID required for access) ---
+circuit create_ephemeral_link(file_id: FileId, owner_id: UserId, owner_sk: bytes(4896), max_downloads: u32, ttl_ms: u64) -> EphemeralLink
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/share {
+        sub_lex ephemeral fan_in
+    }
+    meters [compute_cycles]
+    observe metrics: [ephemeral_links_created, ephemeral_ttls]
+    monitor "ephemeral_rate" { ephemeral_links_created < 100 per 60_000 }
+    invariant "max_downloads_bounded" { max_downloads <= 1000 }
+    invariant "ttl_bounded" { ttl_ms <= 604_800_000 }
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let ts = now()
+    let link_id = blake3(file_id ++ owner_id ++ u64_to_bytes(ts))
+    let hmac_token = blake3(link_id ++ owner_id ++ u64_to_bytes(ts) ++ u64_to_bytes(ttl_ms))
+
+    let link = EphemeralLink {
+        link_id: link_id,
+        file_id: file_id,
+        owner_id: owner_id,
+        hmac_token: hmac_token,
+        max_downloads: max_downloads,
+        downloads_remaining: max_downloads,
+        created_ms: ts,
+        expires_ms: ts + ttl_ms,
+    }
+
+    eslite_insert("ephemeral_links", link_id, link)
+    emit(ephemeral_events, link)
+    link
+}
+
+// --- Accept a share grant (recipient proves identity) ---
+circuit accept_share(share_id: ShareId, recipient_id: UserId, recipient_pk: bytes(2592), recipient_sk: bytes(4896)) -> ShareAcceptance
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/share
+    observe metrics: [shares_accepted, accept_latency_ms]
+    invariant "recipient_matches" { grant.recipient_id == recipient_derived }
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let recipient_derived = polykit_identity::derive_user_id(recipient_pk)
+    if recipient_derived != recipient_id { return error("identity_mismatch") }
+
+    let grant = eslite_query("shares", share_id)
+    if grant == null { return error("share_not_found") }
+    if grant.recipient_id != recipient_id { return error("not_recipient") }
+
+    let ts = now()
+    if grant.expires_ms > 0 && ts > grant.expires_ms { return error("share_expired") }
+
+    let challenge = sha3_256(share_id ++ recipient_id ++ u64_to_bytes(ts))
+    let sig = polykit_identity::sign_message(recipient_sk, challenge)
+
+    eslite_insert("shares", share_id, { ...grant, accepted: true, accepted_ms: ts })
+
+    ShareAcceptance {
+        share_id: share_id,
+        recipient_id: recipient_id,
+        recipient_signature: sig,
+        accepted_ms: ts,
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "create_and_validate_share" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let (recipient_pk, _) = mldsa_keygen()
+        let recipient_id = polykit_identity::derive_user_id(recipient_pk)
+        let file_id = sha3_256(bytes("shared-file-001"))
+
+        let grant = create_share(
+            owner_id, owner_pk, owner_sk,
+            recipient_id,
+            ShareTarget::File { file_id: file_id },
+            SharePermission::ReadOnly,
+            86400000,
+        )
+        let valid = validate_share(grant)
+    }
+    assert {
+        grant.share_id != zeroed(32)
+        grant.owner_id == owner_id
+        grant.recipient_id == recipient_id
+        grant.permission == SharePermission::ReadOnly
+        valid == true
+    }
+}
+
+test golden "revoke_share_by_owner" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let (recipient_pk, _) = mldsa_keygen()
+        let recipient_id = polykit_identity::derive_user_id(recipient_pk)
+
+        let grant = create_share(
+            owner_id, owner_pk, owner_sk,
+            recipient_id,
+            ShareTarget::File { file_id: sha3_256(bytes("file-to-revoke")) },
+            SharePermission::ReadWrite,
+            0,
+        )
+        let revoke_sig = polykit_identity::sign_message(owner_sk, grant.share_id)
+        let revoked = revoke_share(grant.share_id, owner_id, owner_pk, revoke_sig)
+    }
+    assert {
+        revoked == true
+    }
+}
+
+test golden "create_ephemeral_link" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let file_id = sha3_256(bytes("ephemeral-file"))
+
+        let link = create_ephemeral_link(file_id, owner_id, owner_sk, 10, 3600000)
+    }
+    assert {
+        link.link_id != zeroed(32)
+        link.hmac_token != zeroed(32)
+        link.max_downloads == 10
+        link.downloads_remaining == 10
+        link.file_id == sha3_256(bytes("ephemeral-file"))
+    }
+}
+
+kat_vector "sha3_256_share_id_derivation" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "blake3_ephemeral_hmac" {
+    function: "blake3"
+    input: bytes("")
+    expected: hex("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}

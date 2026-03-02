@@ -1,0 +1,116 @@
+{
+  "suite": "polyfiles_golden",
+  "version": "0.1.0",
+  "vectors": [
+    {
+      "name": "happy_path_file_upload",
+      "circuit": "polyfiles_scatter_store",
+      "input": {
+        "operation": "store",
+        "file_size_bytes": 4096,
+        "scatter_k": 3,
+        "scatter_n": 5,
+        "encrypt": true,
+        "kem_algorithm": "ML-KEM-1024",
+        "owner_spark_id": "spark:polyfiles:user_abc123"
+      },
+      "expected_output": {
+        "status": "stored",
+        "shard_count": 5,
+        "reconstruct_threshold": 3,
+        "encrypted": true,
+        "content_hash_algorithm": "BLAKE3",
+        "version": 1
+      },
+      "expected_witness_tier": 2
+    },
+    {
+      "name": "edge_case_zero_byte_file",
+      "circuit": "polyfiles_scatter_store",
+      "input": {
+        "operation": "store",
+        "file_size_bytes": 0,
+        "scatter_k": 2,
+        "scatter_n": 3,
+        "encrypt": true,
+        "kem_algorithm": "ML-KEM-1024",
+        "owner_spark_id": "spark:polyfiles:user_abc123"
+      },
+      "expected_output": {
+        "status": "stored",
+        "shard_count": 3,
+        "reconstruct_threshold": 2,
+        "encrypted": true,
+        "content_hash_algorithm": "BLAKE3",
+        "version": 1,
+        "metadata_only": true
+      },
+      "expected_witness_tier": 2
+    },
+    {
+      "name": "crypto_verify_ml_kem_encapsulation",
+      "circuit": "polyfiles_encrypt",
+      "input": {
+        "operation": "encrypt",
+        "plaintext_hash": "blake3:a1b2c3d4e5f6",
+        "recipient_kem_pk": "mlkem1024:pk_test_vector_001",
+        "sender_dsa_sk": "mldsa87:sk_test_vector_001",
+        "hkdf_context": "poly-files-v1"
+      },
+      "expected_output": {
+        "ciphertext_present": true,
+        "encapsulated_key_present": true,
+        "signature_algorithm": "ML-DSA-87",
+        "signature_valid": true,
+        "hkdf_context_matches": "poly-files-v1",
+        "key_isolation_verified": true
+      },
+      "expected_witness_tier": 2
+    },
+    {
+      "name": "telemetry_isolation_blinded_metrics",
+      "circuit": "polyfiles_observe",
+      "input": {
+        "operation": "store",
+        "spark_id": "spark:polyfiles:user_xyz789",
+        "file_size_bytes": 8192,
+        "emit_metrics": ["file_operations", "storage_bytes", "scatter_stores"]
+      },
+      "expected_output": {
+        "metrics_emitted": 3,
+        "blinded_id_used": true,
+        "cross_product_leak": false,
+        "lex_namespace": "polyfiles",
+        "aggregate_window_ms": 3600000,
+        "cohort_min_met": true,
+        "noise_applied": true
+      },
+      "expected_witness_tier": 2
+    },
+    {
+      "name": "error_insufficient_scatter_shards",
+      "circuit": "polyfiles_scatter_store",
+      "input": {
+        "operation": "reconstruct",
+        "shard_count_available": 2,
+        "reconstruct_threshold": 3,
+        "scatter_n": 5,
+        "content_hash": "blake3:deadbeef0000"
+      },
+      "expected_output": {
+        "status": "error",
+        "error_code": "INSUFFICIENT_SHARDS",
+        "shards_needed": 3,
+        "shards_available": 2,
+        "recovery_hint": "retrieve_additional_shards"
+      },
+      "expected_witness_tier": 2
+    }
+  ],
+  "telemetry_isolation": {
+    "verify_blinded_id": true,
+    "verify_no_cross_product": true,
+    "verify_cohort_min": 50,
+    "verify_aggregate_window_ms": 3600000
+  }
+}

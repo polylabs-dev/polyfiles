@@ -1,0 +1,267 @@
+// PolyFiles Chunk — File chunking with k-of-n erasure coding
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/chunk
+//   Files split into 4 MB chunks, then erasure-coded into k-of-n shards
+//   per classification level. Runs entirely in client WASM.
+//
+// Chunk pipeline:
+//   chunk_file      → split raw bytes into <=4 MB chunks with hashes
+//   erasure_encode  → Reed-Solomon k-of-n encoding per classification policy
+//   erasure_decode  → reconstruct original chunks from any k shards
+//   reassemble_file → concatenate ordered chunks back to original bytes
+
+import polykit_metering
+
+type ChunkSize = u32
+type ShardIndex = u8
+
+const CHUNK_SIZE_BYTES: u32 = 4_194_304
+const MAX_FILE_SIZE: u64 = 53_687_091_200
+
+type Chunk = struct {
+    index: u32,
+    data: bytes,
+    hash: bytes(32),
+    size: ChunkSize,
+}
+
+type Shard = struct {
+    chunk_index: u32,
+    shard_index: ShardIndex,
+    data: bytes,
+    hash: bytes(32),
+    parity: bool,
+}
+
+type ChunkResult = struct {
+    chunks: list<Chunk>,
+    total_chunks: u32,
+    file_hash: bytes(32),
+    original_size: u64,
+}
+
+type ErasureParams = struct {
+    k: u8,
+    n: u8,
+}
+
+type ErasureResult = struct {
+    shards: list<Shard>,
+    total_shards: u32,
+    data_shards: u8,
+    parity_shards: u8,
+    chunk_index: u32,
+}
+
+type ReassembleResult = struct {
+    file_data: bytes,
+    file_hash: bytes(32),
+    total_size: u64,
+    chunks_used: u32,
+}
+
+// --- Split file into 4 MB chunks ---
+circuit chunk_file(file_data: bytes) -> ChunkResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/chunk
+    observe metrics: [files_chunked, chunks_created, bytes_chunked]
+    monitor "chunk_throughput" { bytes_per_sec > 50_000_000 }
+    invariant "file_not_empty" { len(file_data) > 0 }
+    invariant "file_within_limit" { len(file_data) <= MAX_FILE_SIZE }
+    meters [compute_cycles, bandwidth, storage]
+{
+    let file_hash = blake3(file_data)
+    let total_size = len(file_data)
+    let num_chunks = ceil_div(total_size, CHUNK_SIZE_BYTES)
+    let chunks = list_new()
+    for i in 0..num_chunks {
+        let offset = i * CHUNK_SIZE_BYTES
+        let end = min(offset + CHUNK_SIZE_BYTES, total_size)
+        let chunk_data = slice(file_data, offset, end)
+        let chunk_hash = sha3_256(chunk_data)
+        let chunk = Chunk {
+            index: i,
+            data: chunk_data,
+            hash: chunk_hash,
+            size: end - offset,
+        }
+        list_push(chunks, chunk)
+    }
+    ChunkResult {
+        chunks: chunks,
+        total_chunks: num_chunks,
+        file_hash: file_hash,
+        original_size: total_size,
+    }
+}
+
+// --- Erasure-code chunks into k-of-n shards ---
+circuit erasure_encode(chunks: list<Chunk>, k: u8, n: u8) -> list<ErasureResult>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/chunk
+    observe metrics: [erasure_encodes, shards_created, parity_shards_created]
+    monitor "encode_latency" { encode_time_ms < 500 }
+    invariant "k_less_than_n" { k < n }
+    invariant "k_minimum" { k >= 2 }
+    invariant "n_maximum" { n <= 13 }
+    meters [compute_cycles, bandwidth]
+{
+    let parity_count = n - k
+    let results = list_new()
+    for chunk in chunks {
+        let shards = list_new()
+        let data_slices = reed_solomon_split(chunk.data, k)
+        for j in 0..k {
+            let shard_hash = sha3_256(data_slices[j])
+            let shard = Shard {
+                chunk_index: chunk.index,
+                shard_index: j,
+                data: data_slices[j],
+                hash: shard_hash,
+                parity: false,
+            }
+            list_push(shards, shard)
+        }
+        let parity_slices = reed_solomon_encode_parity(data_slices, parity_count)
+        for p in 0..parity_count {
+            let parity_hash = sha3_256(parity_slices[p])
+            let parity_shard = Shard {
+                chunk_index: chunk.index,
+                shard_index: k + p,
+                data: parity_slices[p],
+                hash: parity_hash,
+                parity: true,
+            }
+            list_push(shards, parity_shard)
+        }
+        let result = ErasureResult {
+            shards: shards,
+            total_shards: n,
+            data_shards: k,
+            parity_shards: parity_count,
+            chunk_index: chunk.index,
+        }
+        list_push(results, result)
+    }
+    results
+}
+
+// --- Decode k-of-n shards back into original chunks ---
+circuit erasure_decode(shards: list<Shard>, k: u8) -> list<Chunk>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/chunk
+    observe metrics: [erasure_decodes, shards_consumed, recovery_ops]
+    monitor "decode_success_rate" { successful_decodes / total_decodes > 0.999 }
+    invariant "sufficient_shards" { len(shards) >= k }
+    meters [compute_cycles, bandwidth]
+{
+    let grouped = group_by(shards, |s| s.chunk_index)
+    let chunks = list_new()
+    for (chunk_index, chunk_shards) in grouped {
+        assert(len(chunk_shards) >= k, "insufficient shards for chunk")
+        for shard in chunk_shards {
+            let verify = sha3_256(shard.data)
+            assert(verify == shard.hash, "shard integrity check failed")
+        }
+        let selected = take(chunk_shards, k)
+        let chunk_data = reed_solomon_reconstruct(selected, k)
+        let chunk_hash = sha3_256(chunk_data)
+        let chunk = Chunk {
+            index: chunk_index,
+            data: chunk_data,
+            hash: chunk_hash,
+            size: len(chunk_data),
+        }
+        list_push(chunks, chunk)
+    }
+    sort_by(chunks, |c| c.index)
+}
+
+// --- Reassemble ordered chunks into original file ---
+circuit reassemble_file(chunks: list<Chunk>) -> ReassembleResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/chunk
+    observe metrics: [files_reassembled, bytes_reassembled]
+    monitor "reassembly_integrity" { hash_matches == true }
+    invariant "chunks_ordered" { is_contiguous(chunks, |c| c.index) }
+    invariant "no_empty_chunks" { all(chunks, |c| len(c.data) > 0) }
+    meters [compute_cycles, bandwidth]
+{
+    let sorted = sort_by(chunks, |c| c.index)
+    let file_data = bytes_new()
+    let total_size: u64 = 0
+    for chunk in sorted {
+        let verify = sha3_256(chunk.data)
+        assert(verify == chunk.hash, "chunk hash mismatch during reassembly")
+        bytes_append(file_data, chunk.data)
+        total_size = total_size + len(chunk.data)
+    }
+    let file_hash = blake3(file_data)
+    ReassembleResult {
+        file_data: file_data,
+        file_hash: file_hash,
+        total_size: total_size,
+        chunks_used: len(sorted),
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "chunk_basic_file" {
+    input {
+        file_data: bytes("Hello, World! This is test data for the PolyFiles chunking circuit.")
+    }
+    assert {
+        result.total_chunks == 1
+        result.original_size == 67
+        result.file_hash != zeroed(32)
+        result.chunks[0].hash != zeroed(32)
+        result.chunks[0].size == 67
+        result.chunks[0].index == 0
+    }
+}
+
+test golden "chunk_roundtrip_erasure" {
+    input {
+        file_data: bytes("Erasure coding roundtrip test payload for PolyFiles scatter storage.")
+        k: 3
+        n: 5
+    }
+    steps {
+        let chunked = chunk_file(file_data)
+        let encoded = erasure_encode(chunked.chunks, k, n)
+        let shards_subset = take(encoded[0].shards, k)
+        let decoded = erasure_decode(shards_subset, k)
+        let reassembled = reassemble_file(decoded)
+    }
+    assert {
+        reassembled.file_data == file_data
+        reassembled.file_hash == chunked.file_hash
+        reassembled.total_size == 69
+    }
+}
+
+kat_vector "sha3_256_empty" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_abc" {
+    function: "sha3_256"
+    input: bytes("abc")
+    expected: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+}
+
+kat_vector "blake3_empty" {
+    function: "blake3"
+    input: bytes("")
+    expected: hex("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}
+
+kat_vector "blake3_abc" {
+    function: "blake3"
+    input: bytes("abc")
+    expected: hex("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")
+}
