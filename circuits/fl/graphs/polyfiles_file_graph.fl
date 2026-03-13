@@ -6,7 +6,7 @@
 //
 // Models the file system as a typed graph. Files and folders are nodes;
 // containment and ownership are edges. Overlays track classification,
-// scatter health, version count, and shard state without mutating the
+// distribute health, version count, and shard state without mutating the
 // base graph. Stratum storage binds each node type to graph storage
 // under lex governance. Cortex policies control field-level obfuscation
 // and anomaly detection across the file registry.
@@ -31,7 +31,7 @@ data FileNode : files v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -49,7 +49,7 @@ data FolderNode : files v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -65,7 +65,7 @@ data ContainsEdge : files v1 {
     added_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -77,7 +77,7 @@ data OwnedByEdge : files v1 {
     owner_since_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -102,7 +102,7 @@ data FolderListing : files v1 {
     total_count: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -115,7 +115,7 @@ data MoveResult : files v1 {
     moved_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -165,7 +165,7 @@ graph file_registry {
     ai_feed file_anomaly_detection
     ai_feed classification_suggestion
 
-    observe file_registry: [classification, scatter_health, size_bytes] threshold: {
+    @observe file_registry: [classification, scatter_health, size_bytes] threshold: {
         anomaly_score 0.85
         baseline_window 300
     }
@@ -207,16 +207,16 @@ stream file_events: event<FileNode>
 // ── Circuits ───────────────────────────────────────────────────────
 
 circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), folder_id: FolderId, name: string, mime_type: string, content_hash: bytes(32), manifest_hash: bytes(32), classification: u8, size_bytes: u64, shard_count: u16) -> FileNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
-    observe metrics: [files_created, storage_bytes_added, classification_distribution]
+    @observe metrics: [files_created, storage_bytes_added, classification_distribution]
     monitor "file_creation_rate" { files_created > 0 }
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { classification <= 4 }
@@ -290,16 +290,16 @@ circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
 }
 
 circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: FolderId, name: string, classification: u8) -> FolderNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
-    observe metrics: [folders_created]
+    @observe metrics: [folders_created]
     monitor "folder_creation_rate" { folders_created > 0 }
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { classification <= 4 }
@@ -357,16 +357,16 @@ circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: Folder
 }
 
 circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_parent: FolderId, new_parent: FolderId) -> MoveResult
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles]
-    observe metrics: [files_moved]
+    @observe metrics: [files_moved]
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "different_parents" { old_parent != new_parent }
     property safety "no_classification_downgrade" { file.classification <= dst.classification }
@@ -421,16 +421,16 @@ circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_
 }
 
 circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), file_id: FileId, parent_id: FolderId) -> bool
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
-    observe metrics: [files_deleted, storage_bytes_freed]
+    @observe metrics: [files_deleted, storage_bytes_freed]
     invariant "owner_authenticated" { derived_id == owner_id }
     property safety "delete_requires_ownership" { file.owner_id == owner_id }
     wasm_abi [eslite_query, eslite_delete, eslite_insert, now]
@@ -469,16 +469,16 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
 }
 
 circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), file_id: FileId, new_classification: u8) -> FileNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles]
-    observe metrics: [reclassifications, classification_upgrades, classification_downgrades]
+    @observe metrics: [reclassifications, classification_upgrades, classification_downgrades]
     monitor "reclassification_anomaly" { classification_downgrades / reclassifications < 0.1 }
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { new_classification <= 4 }
@@ -511,13 +511,13 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
 }
 
 circuit list_folder(owner_id: UserId, folder_id: FolderId, offset: u32, limit: u32) -> FolderListing
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [folder_listings, results_returned]
+    lex global/org/polylabs/files
+    @observe metrics: [folder_listings, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
     property liveness "listing_eventually_returns" { eventually(result != null) }

@@ -1,11 +1,11 @@
-// Poly Files Storage Router — server-side scatter storage routing
+// Poly Files Storage Router — server-side distribute storage routing
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/files/router
 //     └── sub_lex session fan_in  ← per-upload session; only metrics/status fan up
 //
-// Validates manifest ML-DSA-87 signatures, enforces scatter policies per
-// classification level, distributes shards via VRF-directed scatter to
+// Validates manifest ML-DSA-87 signatures, enforces distribute policies per
+// classification level, distributes shards via VRF-directed distribute to
 // k-of-n storage nodes, records manifests, and updates file indices.
 
 import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
@@ -37,7 +37,7 @@ data Manifest : files v1 {
     timestamp_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/router
+    govern lex global/org/polylabs/files/router
     cortex {
         redact [signature, signing_pk, encryption_nonce, owner_id]
         infer on_write
@@ -54,7 +54,7 @@ data Shard : files v1 {
     content_hash: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/router
+    govern lex global/org/polylabs/files/router
     cortex {
         redact [content_hash, node_id]
         infer on_write
@@ -69,7 +69,7 @@ data ScatterResult : files v1 {
     vrf_seed: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/router
+    govern lex global/org/polylabs/files/router
     cortex {
         redact [vrf_seed, placement_proof]
         infer on_write
@@ -85,7 +85,7 @@ data DownloadToken : files v1 {
     token_signature: bytes(4627),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/router
+    govern lex global/org/polylabs/files/router
     cortex {
         redact [token_signature, requester_id, shard_locations]
         infer on_write
@@ -100,7 +100,7 @@ data IndexEntry : files v1 {
     updated_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/router
+    govern lex global/org/polylabs/files/router
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -165,13 +165,13 @@ stream confirm_events: event<ScatterResult>
     | topic "polylabs.files.{user_id}.upload.confirm"
     | retention ephemeral
 
-// --- Validate manifest signature and scatter policy ---
+// --- Validate manifest signature and distribute policy ---
 circuit validate_manifest(manifest: Manifest) -> bool
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router
-    precision C
-    observe metrics: [manifest_validations, signature_checks, policy_violations]
+    lex global/org/polylabs/files/router
+    @precision C
+    @observe metrics: [manifest_validations, signature_checks, policy_violations]
     monitor "validation_latency" { validation_time_ms < 20 }
     invariant "manifest_signed" { len(manifest.signature) == 4627 }
     invariant "valid_scatter_k" { scatter_k(manifest.scatter_policy) <= scatter_n(manifest.scatter_policy) }
@@ -200,12 +200,12 @@ circuit validate_manifest(manifest: Manifest) -> bool
 circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32)]) -> ScatterResult
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router {
+    lex global/org/polylabs/files/router {
         sub_lex session fan_in
     }
-    precision C
+    @precision C
     meters [compute_cycles, bandwidth]
-    observe metrics: [shards_scattered, scatter_latency_ms, node_selections]
+    @observe metrics: [shards_scattered, scatter_latency_ms, node_selections]
     monitor "scatter_success_rate" { scatter_failures / scatter_attempts < 0.05 }
     invariant "minimum_placement" { shards_placed >= scatter_k(manifest.scatter_policy) }
     property safety "all_shards_placed_on_distinct_nodes" { unique(placements.node_id) }
@@ -252,9 +252,9 @@ circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32
 circuit store_manifest(manifest: Manifest) -> ManifestHash
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router
-    precision C
-    observe metrics: [manifests_stored, storage_latency_ms]
+    lex global/org/polylabs/files/router
+    @precision C
+    @observe metrics: [manifests_stored, storage_latency_ms]
     monitor "store_throughput" { manifests_stored > 0 }
     invariant "manifest_has_file_id" { manifest.file_id != zeroed(32) }
     property safety "manifest_hash_deterministic" { hash(m) == hash(m) }
@@ -283,10 +283,10 @@ circuit store_manifest(manifest: Manifest) -> ManifestHash
 circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: bytes(2592), requester_sig: bytes(4627)) -> DownloadToken
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router
-    precision C
+    lex global/org/polylabs/files/router
+    @precision C
     meters [compute_cycles, bandwidth]
-    observe metrics: [downloads_routed, download_latency_ms, auth_failures]
+    @observe metrics: [downloads_routed, download_latency_ms, auth_failures]
     monitor "download_auth_rate" { auth_failures / downloads_routed < 0.1 }
     invariant "requester_authenticated" { sig_valid == true }
     property safety "access_control_enforced" { !is_owner && !has_share implies error("access_denied") }
@@ -328,9 +328,9 @@ circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: byte
 circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size: u64, new_version: u64) -> IndexEntry
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router
-    precision C
-    observe metrics: [index_updates]
+    lex global/org/polylabs/files/router
+    @precision C
+    @observe metrics: [index_updates]
     invariant "version_positive" { new_version > 0 }
     property safety "index_monotonic_version" { new_version >= old_version }
     wasm_abi [eslite_insert, eslite_query, now]
@@ -351,10 +351,10 @@ circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size:
 circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), owner_pk: bytes(2592)) -> bool
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/router
-    precision C
+    lex global/org/polylabs/files/router
+    @precision C
     meters [compute_cycles]
-    observe metrics: [files_purged, purge_latency_ms, shard_deletions]
+    @observe metrics: [files_purged, purge_latency_ms, shard_deletions]
     monitor "purge_completeness" { orphan_shards == 0 }
     invariant "owner_authenticated" { derived == owner_id }
     property safety "purge_requires_ownership" { derived == owner_id && sig_valid }
@@ -421,7 +421,7 @@ test golden "scatter_shards_standard_policy" {
     steps {
         let (pk, sk) = mldsa_keygen()
         let owner_id = polykit_identity::derive_user_id(pk)
-        let file_id = sha3_256(bytes("scatter-test"))
+        let file_id = sha3_256(bytes("distribute-test"))
 
         let manifest = Manifest {
             file_id: file_id,
@@ -442,7 +442,7 @@ test golden "scatter_shards_standard_policy" {
         let result = scatter_shards(manifest, shards, node_pool)
     }
     assert {
-        result.file_id == sha3_256(bytes("scatter-test"))
+        result.file_id == sha3_256(bytes("distribute-test"))
         result.shards_required == 3
         result.shards_placed >= 3
         result.placement_proof != zeroed(32)

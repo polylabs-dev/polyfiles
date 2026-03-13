@@ -31,7 +31,7 @@ data VersionNode : files v1 {
     created_ms: u64,
 }
     store dag
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [author_id]
         redact [signature, author_pk]
@@ -55,7 +55,7 @@ data ParentEdge : files v1 {
     merge_strategy: MergeStrategy,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -81,7 +81,7 @@ data AncestorResult : files v1 {
     proof: MerkleProof,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -93,7 +93,7 @@ data DescendantResult : files v1 {
     depth: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -107,7 +107,7 @@ data CommonAncestorResult : files v1 {
     proof_b: MerkleProof,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -121,7 +121,7 @@ data MergeCandidate : files v1 {
     conflict_detected: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -135,7 +135,7 @@ data VersionProof : files v1 {
     author_verified: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -163,7 +163,7 @@ dag version_history {
         tier nvme { capacity: 100_000_000 }
     }
 
-    attest povc {
+    attest attested {
         witness threshold(2, 3)
     }
 
@@ -180,7 +180,7 @@ dag version_history {
     ai_feed version_anomaly_detection
     ai_feed merge_conflict_prediction
 
-    observe version_history: [shard_health, download_count, branch_depth] threshold: {
+    @observe version_history: [shard_health, download_count, branch_depth] threshold: {
         anomaly_score 0.85
         baseline_window 300
     }
@@ -226,16 +226,16 @@ stream version_events: event<VersionNode>
 // ── Circuits ───────────────────────────────────────────────────────
 
 circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592), author_sk: bytes(4896), manifest_hash: ManifestHash, parent_ids: [VersionId; 4], parent_count: u32, file_size: u64, message: string) -> VersionNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex version fan_in
     }
     meters [compute_cycles, storage]
-    observe metrics: [versions_created, dag_depth, merge_versions]
+    @observe metrics: [versions_created, dag_depth, merge_versions]
     monitor "version_creation_rate" { versions_created > 0 }
     invariant "author_authenticated" { author_derived == author_id }
     invariant "parent_count_valid" { parent_count <= 4 }
@@ -322,13 +322,13 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
 }
 
 circuit get_ancestors(version_id: VersionId, max_depth: u64) -> AncestorResult
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [ancestor_queries, traversal_depth, nodes_visited]
+    lex global/org/polylabs/files
+    @observe metrics: [ancestor_queries, traversal_depth, nodes_visited]
     monitor "traversal_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
     property safety "ancestors_acyclic" { no_cycles(ancestors) }
@@ -371,13 +371,13 @@ circuit get_ancestors(version_id: VersionId, max_depth: u64) -> AncestorResult
 }
 
 circuit get_descendants(version_id: VersionId, max_depth: u64) -> DescendantResult
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [descendant_queries, traversal_depth]
+    lex global/org/polylabs/files
+    @observe metrics: [descendant_queries, traversal_depth]
     monitor "descendant_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
     property liveness "traversal_terminates" { eventually(result != null) }
@@ -413,13 +413,13 @@ circuit get_descendants(version_id: VersionId, max_depth: u64) -> DescendantResu
 }
 
 circuit find_common_ancestor(version_a: VersionId, version_b: VersionId) -> CommonAncestorResult
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [common_ancestor_queries, lca_depth, lca_latency_ms]
+    lex global/org/polylabs/files
+    @observe metrics: [common_ancestor_queries, lca_depth, lca_latency_ms]
     monitor "lca_latency" { lca_latency_ms < 500 }
     invariant "distinct_versions" { version_a != version_b }
     property safety "common_ancestor_exists" { result.ancestor_id in ancestors(a) && result.ancestor_id in ancestors(b) }
@@ -475,16 +475,16 @@ circuit find_common_ancestor(version_a: VersionId, version_b: VersionId) -> Comm
 }
 
 circuit merge_versions(file_id: FileId, author_id: UserId, author_pk: bytes(2592), author_sk: bytes(4896), version_a: VersionId, version_b: VersionId, merged_manifest: ManifestHash, strategy: MergeStrategy, message: string) -> VersionNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex version fan_in
     }
     meters [compute_cycles, storage]
-    observe metrics: [merges_created, merge_conflicts, merge_strategies]
+    @observe metrics: [merges_created, merge_conflicts, merge_strategies]
     monitor "merge_success_rate" { merge_conflicts / merges_created < 0.2 }
     invariant "distinct_branches" { version_a != version_b }
     property safety "merge_has_two_parents" { result.parent_count == 2 }
@@ -512,13 +512,13 @@ circuit merge_versions(file_id: FileId, author_id: UserId, author_pk: bytes(2592
 }
 
 circuit prove_version(version_id: VersionId) -> VersionProof
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [proofs_generated, proof_verifications]
+    lex global/org/polylabs/files
+    @observe metrics: [proofs_generated, proof_verifications]
     monitor "proof_latency" { proof_time_ms < 50 }
     invariant "version_exists" { node != null }
     property safety "proof_verifiable" { result.verified implies merkle_verify(result.proof_path, result.merkle_root) }

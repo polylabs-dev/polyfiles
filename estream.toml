@@ -1,6 +1,6 @@
 [platform]
-version = "0.11.0"
-min_version = "0.11.0"
+version = "0.12.0"
+min_version = "0.12.0"
 
 [project]
 name = "polyfiles"
@@ -14,7 +14,7 @@ output = ".es/build"
 target = ["wasm", "lattice"]
 
 [build.escir]
-api_version = "0.11.0"
+api_version = "0.12.0"
 emit_ir = true
 optimization_level = 2
 

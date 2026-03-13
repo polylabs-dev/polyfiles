@@ -25,7 +25,7 @@ data ShareUserNode : files v1 {
     joined_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         redact [email]
         obfuscate [user_id]
@@ -43,7 +43,7 @@ data SharedFileNode : files v1 {
     created_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -62,7 +62,7 @@ data EphemeralLinkNode : files v1 {
     state: ShareState,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         redact [link_secret]
         infer on_write
@@ -94,7 +94,7 @@ data OwnsEdge : files v1 {
     file_id: FileId,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -112,7 +112,7 @@ data ShareEdge : files v1 {
     expires_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [from_user, to_user]
         infer on_write
@@ -126,7 +126,7 @@ data EphemeralEdge : files v1 {
     state: ShareState,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [creator_id]
         infer on_write
@@ -139,7 +139,7 @@ data ShareListResult : files v1 {
     total_count: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -155,7 +155,7 @@ data SharedFileEntry : files v1 {
     granted_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -249,7 +249,7 @@ graph share_network {
     ai_feed share_anomaly_detection
     ai_feed permission_escalation_detection
 
-    observe share_network: [permission_level, access_count, active_shares] threshold: {
+    @observe share_network: [permission_level, access_count, active_shares] threshold: {
         anomaly_score 0.9
         baseline_window 300
     }
@@ -289,15 +289,15 @@ stream share_graph_events: event<ShareEdge>
 // ── Circuits ───────────────────────────────────────────────────────
 
 circuit add_share_user(user_id: UserId, public_key: bytes(2592)) -> ShareUserNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex share fan_in
     }
-    observe metrics: [share_users_added, graph_node_count]
+    @observe metrics: [share_users_added, graph_node_count]
     monitor "user_node_creation" { share_users_added > 0 }
     invariant "user_identity_valid" { derived_id == user_id }
     property safety "user_node_unique" { !exists(share_users, user_id) || result == existing }
@@ -327,16 +327,16 @@ circuit add_share_user(user_id: UserId, public_key: bytes(2592)) -> ShareUserNod
 }
 
 circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896), to_user: UserId, file_id: FileId, permission: SharePermission, ttl_ms: u64) -> ShareEdge
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex share fan_in
     }
     meters [compute_cycles]
-    observe metrics: [files_shared, share_permissions, share_edges_created]
+    @observe metrics: [files_shared, share_permissions, share_edges_created]
     monitor "share_rate" { files_shared > 0 }
     invariant "from_authenticated" { from_derived == from_user }
     invariant "no_self_share" { from_user != to_user }
@@ -394,16 +394,16 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
 }
 
 circuit create_ephemeral(file_id: FileId, creator_id: UserId, creator_sk: bytes(4896), max_downloads: u32, ttl_ms: u64) -> EphemeralLinkNode
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex share fan_in
     }
     meters [compute_cycles]
-    observe metrics: [ephemeral_links_created, ephemeral_ttls]
+    @observe metrics: [ephemeral_links_created, ephemeral_ttls]
     monitor "ephemeral_creation_rate" { ephemeral_links_created < 500 per 3_600_000 }
     invariant "max_downloads_bounded" { max_downloads <= 10000 }
     invariant "ttl_bounded" { ttl_ms <= 2_592_000_000 }
@@ -449,15 +449,15 @@ circuit create_ephemeral(file_id: FileId, creator_id: UserId, creator_sk: bytes(
 }
 
 circuit revoke_share(share_id: ShareId, revoker_id: UserId, revoker_pk: bytes(2592), revoker_sig: bytes(4627)) -> ShareEdge
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         sub_lex share fan_in
     }
-    observe metrics: [shares_revoked, revoke_latency_ms]
+    @observe metrics: [shares_revoked, revoke_latency_ms]
     monitor "revoke_success" { shares_revoked > 0 }
     invariant "revoker_authenticated" { revoker_derived == revoker_id }
     property safety "revoke_is_terminal" { result.state == ShareState::Revoked }
@@ -492,13 +492,13 @@ circuit revoke_share(share_id: ShareId, revoker_id: UserId, revoker_pk: bytes(25
 }
 
 circuit list_shared(user_id: UserId, offset: u32, limit: u32) -> ShareListResult
-    status production
-    precision u64
-    povc true
+    @status production
+    @precision u64
+    @attested true
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files
-    observe metrics: [share_list_queries, results_returned]
+    lex global/org/polylabs/files
+    @observe metrics: [share_list_queries, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
     property liveness "list_eventually_returns" { eventually(result != null) }

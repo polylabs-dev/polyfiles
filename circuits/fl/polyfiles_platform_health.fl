@@ -7,7 +7,7 @@
 /// Zero-linkage: HKDF("poly-files-telemetry-v1") isolates all identity.
 /// No content bytes, file names, or user paths ever reach StreamSight.
 ///
-/// govern lex esn/global/org/polylabs/files
+/// govern lex global/org/polylabs/files
 
 import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
 import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
@@ -31,7 +31,7 @@ data PlatformMetrics : files v1 {
     collected_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files
+    govern lex global/org/polylabs/files
     cortex {
         obfuscate [blinded_user_id, anomaly_score]
         infer on_write
@@ -48,12 +48,12 @@ type HealthStatus = enum {
 
 stream files_health_events: event<PlatformMetrics>
     retention 365d
-    consumers [streamsight, audit_trail]
+    consumers [observe, audit_trail]
     classify blinded_user_id: METADATA, cohort_size: METADATA
 
 stream files_anomaly_events: event<PlatformMetrics>
     retention forever
-    consumers [streamsight, governance, alerting]
+    consumers [observe, governance, alerting]
 
 // ── Series ──────────────────────────────────────────────────────────
 
@@ -75,20 +75,20 @@ circuit files_platform_health(
     version_creates: u64,
 ) -> PlatformMetrics
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         governance hierarchical
         audit_trail true
         sub_lex file_ops fan_in
     }
-    precision C
-    streamsight true
-    povc true
-    observe metrics: [platform_queries, active_users, file_operations, storage_bytes_total, scatter_stores, version_creates]
+    @precision C
+    @observe true
+    @attested true
+    @observe metrics: [platform_queries, active_users, file_operations, storage_bytes_total, scatter_stores, version_creates]
     invariant "no_content_at_platform" { content_visible == false }
     property safety "session_isolation" { no_cross_session_data }
     property liveness "eventually_healthy" { eventually(all_healthy == true) }
     monitor "file_ops_baseline" { deviation(file_operations, baseline) < 0.15 }
-    esz_emit "verify/files_health.esz"
+    @serialize "verify/files_health.esz"
     li_feed full_escir true, optimized_ir true, optimization_metadata true
     fuzz_target
     test golden "healthy_platform" {
@@ -184,13 +184,13 @@ circuit files_anomaly_check(
     window_ms: u64,
 ) -> (HealthStatus, f64, string)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files {
+    lex global/org/polylabs/files {
         governance hierarchical
         audit_trail true
     }
-    precision C
-    streamsight true
-    observe metrics: [anomaly_checks, anomaly_detections]
+    @precision C
+    @observe true
+    @observe metrics: [anomaly_checks, anomaly_detections]
     monitor "anomaly_rate" { anomaly_detections < 50/hr }
     invariant "window_positive" { window_ms > 0 }
     property safety "critical_detected" { max_anomaly > 0.8 implies status == Critical }

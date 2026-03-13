@@ -1,9 +1,9 @@
-// PolyFiles Classify — Classification assignment and scatter policy lookup
+// PolyFiles Classify — Classification assignment and distribute policy lookup
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/files/classify
 //   5-level classification: Public → Internal → Sensitive → Restricted → Sovereign
-//   Each level maps to a scatter policy (k-of-n erasure + jurisdiction count).
+//   Each level maps to a distribute policy (k-of-n erasure + jurisdiction count).
 //   Supports manual, inherited, ESLM auto, and .polyclassification file sources.
 //
 // Scatter policy table:
@@ -39,7 +39,7 @@ data ScatterPolicy : files v1 {
     geo_diversity: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/classify
+    govern lex global/org/polylabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -52,7 +52,7 @@ data ClassificationRule : files v1 {
     priority: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/classify
+    govern lex global/org/polylabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -65,7 +65,7 @@ data ClassificationPolicy : files v1 {
     minimum_level: Classification,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/classify
+    govern lex global/org/polylabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -79,7 +79,7 @@ data ClassifyResult : files v1 {
     rule_matched: string,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/classify
+    govern lex global/org/polylabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -92,7 +92,7 @@ data ValidationResult : files v1 {
     actual_level: Classification,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/classify
+    govern lex global/org/polylabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -108,9 +108,9 @@ circuit classify_file(
     eslm_confidence: f32,
 ) -> ClassifyResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/classify
-    precision C
-    observe metrics: [classifications_assigned, classification_changes, source_distribution]
+    lex global/org/polylabs/files/classify
+    @precision C
+    @observe metrics: [classifications_assigned, classification_changes, source_distribution]
     monitor "classification_latency" { classify_time_ms < 10 }
     invariant "result_not_below_parent" {
         parent_classification.is_none() || result.classification >= parent_classification.unwrap()
@@ -165,11 +165,11 @@ circuit classify_file(
         level
     }
 
-    let scatter = lookup_scatter_table(level)
+    let distribute = lookup_scatter_table(level)
     ClassifyResult {
         classification: level,
         source: source,
-        scatter_policy: scatter,
+        scatter_policy: distribute,
         confidence: if source == ClassificationSource::EslmAuto { eslm_confidence } else { 1.0 },
         rule_matched: rule_matched,
     }
@@ -178,9 +178,9 @@ circuit classify_file(
 // --- Parse .polyclassification file ---
 circuit parse_polyclassification(content: string) -> list<ClassificationRule>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/classify
-    precision C
-    observe metrics: [polyclassification_parses, rules_parsed]
+    lex global/org/polylabs/files/classify
+    @precision C
+    @observe metrics: [polyclassification_parses, rules_parsed]
     monitor "parse_errors" { parse_failures == 0 }
     invariant "content_not_empty" { len(content) > 0 }
     property safety "parsed_rules_valid" { all(result, |r| r.classification in Classification) }
@@ -218,12 +218,12 @@ circuit parse_polyclassification(content: string) -> list<ClassificationRule>
     rules
 }
 
-// --- Look up scatter policy for a classification level ---
+// --- Look up distribute policy for a classification level ---
 circuit lookup_scatter_policy(classification: Classification) -> ScatterPolicy
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/classify
-    precision C
-    observe metrics: [scatter_lookups]
+    lex global/org/polylabs/files/classify
+    @precision C
+    @observe metrics: [scatter_lookups]
     invariant "valid_k_n" { result.k < result.n }
     invariant "jurisdiction_positive" { result.jurisdictions >= 1 }
     property safety "k_less_than_n" { result.k < result.n }
@@ -237,9 +237,9 @@ circuit validate_classification(
     policy: ClassificationPolicy,
 ) -> ValidationResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/classify
-    precision C
-    observe metrics: [classification_validations, validation_failures]
+    lex global/org/polylabs/files/classify
+    @precision C
+    @observe metrics: [classification_validations, validation_failures]
     monitor "validation_rejections" { rejection_rate < 0.1 }
     invariant "policy_has_minimum" { policy.minimum_level in Classification }
     property safety "validation_consistent" { validate(c, p) == validate(c, p) }
@@ -263,10 +263,10 @@ circuit validate_classification(
     }
 }
 
-// --- Internal: scatter policy lookup table ---
+// --- Internal: distribute policy lookup table ---
 circuit lookup_scatter_table(level: Classification) -> ScatterPolicy
     profile poly_framework_standard
-    precision C
+    @precision C
 {
     match level {
         Classification::Public => ScatterPolicy {
@@ -290,7 +290,7 @@ circuit lookup_scatter_table(level: Classification) -> ScatterPolicy
 // --- Internal: match file path against policy rules ---
 circuit match_policy_rules(rules: list<ClassificationRule>, file_path: string) -> option<ClassificationRule>
     profile poly_framework_standard
-    precision C
+    @precision C
 {
     let best: option<ClassificationRule> = none
     for rule in rules {

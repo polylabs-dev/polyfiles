@@ -23,7 +23,7 @@ data ShardLocation : files v1 {
     cas_address: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [cas_address]
         infer on_write
@@ -37,7 +37,7 @@ data ShardMap : files v1 {
     n: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [locations]
         infer on_write
@@ -50,7 +50,7 @@ data WrappedFileKey : files v1 {
     key_hash: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [kem_ciphertext, encrypted_file_key]
         infer on_write
@@ -65,7 +65,7 @@ data ManifestMetadata : files v1 {
     modified_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [filename]
         infer on_write
@@ -83,7 +83,7 @@ data Manifest : files v1 {
     manifest_hash: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [wrapped_file_key, file_id]
         infer on_write
@@ -97,7 +97,7 @@ data SignedManifest : files v1 {
     signed_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [signature, signer_public_key]
         infer on_write
@@ -112,7 +112,7 @@ data VersionEntry : files v1 {
     action: string,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [signed_manifest]
         infer on_write
@@ -126,7 +126,7 @@ data ManifestVerification : files v1 {
     verified_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/manifest
+    govern lex global/org/polylabs/files/manifest
     cortex {
         redact [signer_key_hash]
         infer on_write
@@ -144,9 +144,9 @@ circuit build_manifest(
     metadata: ManifestMetadata,
 ) -> Manifest
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/manifest
-    precision C
-    observe metrics: [manifests_built, chunks_per_manifest, shards_per_manifest]
+    lex global/org/polylabs/files/manifest
+    @precision C
+    @observe metrics: [manifests_built, chunks_per_manifest, shards_per_manifest]
     monitor "manifest_build_latency" { build_time_ms < 50 }
     invariant "chunk_count_matches_shards" { len(chunk_hashes) == len(shard_maps) }
     invariant "version_positive" { version > 0 }
@@ -189,10 +189,10 @@ circuit sign_manifest(
     signer_public_key: bytes(2592),
 ) -> SignedManifest
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/files/manifest
-    precision C
+    lex global/org/polylabs/files/manifest
+    @precision C
     constant_time true
-    observe metrics: [manifest_signs, mldsa_sign_ops]
+    @observe metrics: [manifest_signs, mldsa_sign_ops]
     monitor "sign_latency" { sign_time_ms < 30 }
     invariant "manifest_hash_present" { manifest.manifest_hash != zeroed(32) }
     invariant "signing_key_valid" { len(spark_signing_key) == 4896 }
@@ -216,9 +216,9 @@ circuit sign_manifest(
 // --- Verify manifest ML-DSA-87 signature ---
 circuit verify_manifest(signed_manifest: SignedManifest) -> ManifestVerification
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/manifest
-    precision C
-    observe metrics: [manifest_verifications, verification_failures]
+    lex global/org/polylabs/files/manifest
+    @precision C
+    @observe metrics: [manifest_verifications, verification_failures]
     monitor "verify_failure_rate" { verification_failures / manifest_verifications < 0.001 }
     invariant "signature_present" { len(signed_manifest.signature) == 4627 }
     property safety "verification_deterministic" { verify(a) == verify(a) }
@@ -254,9 +254,9 @@ circuit build_version_entry(
     action: string,
 ) -> VersionEntry
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/manifest
-    precision C
-    observe metrics: [version_entries_created, version_chain_depth]
+    lex global/org/polylabs/files/manifest
+    @precision C
+    @observe metrics: [version_entries_created, version_chain_depth]
     invariant "valid_action" {
         action == "create" || action == "update" || action == "rename" || action == "reclassify"
     }
@@ -286,7 +286,7 @@ circuit build_version_entry(
 // --- Internal: recompute manifest hash for verification ---
 circuit recompute_manifest_hash(manifest: Manifest) -> bytes(32)
     profile poly_framework_standard
-    precision C
+    @precision C
 {
     let hash_input = bytes_new()
     bytes_append(hash_input, manifest.file_id)
@@ -388,13 +388,13 @@ test golden "build_version_entry_create" {
     }
 }
 
-kat_vector "sha3_256_manifest_hashing" {
+golden_test "sha3_256_manifest_hashing" {
     function: "sha3_256"
     input: bytes("")
     expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
 }
 
-kat_vector "sha3_256_manifest_payload" {
+golden_test "sha3_256_manifest_payload" {
     function: "sha3_256"
     input: bytes("polyfiles-manifest-v1")
     expected: hex("c9b8a7603c7f8e1d5a2b4e6f0813927d4c5a6b7e8f9012d3e4a5b6c7d8e9f0a1")

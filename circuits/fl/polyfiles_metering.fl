@@ -8,7 +8,7 @@
 // dimensions (E/H/B/S/O/P/C/M). Each operation activates a specific
 // subset of dimensions based on resource consumption profile:
 //
-//   upload   → [B, S, O, E]   scatter  → [S, B, H]
+//   upload   → [B, S, O, E]   distribute  → [S, B, H]
 //   download → [B, O]         share    → [O]
 //   search   → [O, M]         git_push → [B, S, O]
 //   git_clone → [B, O]
@@ -35,7 +35,7 @@ data UploadMetrics : files v1 {
     erasure_coding_cycles: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -47,7 +47,7 @@ data DownloadMetrics : files v1 {
     reassembly_cycles: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -61,7 +61,7 @@ data ScatterMetrics : files v1 {
     fpga_cycles: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -75,7 +75,7 @@ data QuotaStatus : files v1 {
     within_quota: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         redact [user_id]
         infer on_write
@@ -90,7 +90,7 @@ data UsageSummary : files v1 {
     operation_counts: OperationCounts,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         redact [user_id]
         infer on_write
@@ -107,7 +107,7 @@ data OperationCounts : files v1 {
     git_clones: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/metering
+    govern lex global/org/polylabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -123,12 +123,12 @@ stream metering_events: event<polykit_metering::MeteringRecord>
 circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/metering {
+    lex global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
-    precision C
+    @precision C
     meters [compute_cycles]
-    observe metrics: [upload_meters, bandwidth_metered, storage_metered]
+    @observe metrics: [upload_meters, bandwidth_metered, storage_metered]
     monitor "upload_metering_latency" { metering_time_ms < 5 }
     invariant "positive_file_size" { metrics.file_size > 0 }
     property safety "metering_non_negative" { all_dims >= 0 }
@@ -160,12 +160,12 @@ circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_meterin
 circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/metering {
+    lex global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
-    precision C
+    @precision C
     meters [compute_cycles]
-    observe metrics: [download_meters, bandwidth_metered]
+    @observe metrics: [download_meters, bandwidth_metered]
     monitor "download_metering_latency" { metering_time_ms < 5 }
     invariant "positive_file_size" { metrics.file_size > 0 }
     property safety "bandwidth_accounts_for_overhead" { dims.bandwidth >= metrics.file_size }
@@ -190,16 +190,16 @@ circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_met
     record
 }
 
-// --- Meter a scatter operation: [S, B, H] ---
+// --- Meter a distribute operation: [S, B, H] ---
 circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/metering {
+    lex global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
-    precision C
+    @precision C
     meters [compute_cycles]
-    observe metrics: [scatter_meters, fpga_cycles_metered, storage_metered]
+    @observe metrics: [scatter_meters, fpga_cycles_metered, storage_metered]
     monitor "scatter_metering_latency" { metering_time_ms < 5 }
     invariant "shard_count_positive" { metrics.shard_count > 0 }
     property safety "scatter_storage_tracked" { dims.storage == metrics.total_shard_bytes }
@@ -220,7 +220,7 @@ circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_meter
         mpc_sessions: 0,
     }
 
-    let record = polykit_metering::record_usage(user_id, "scatter", dims)
+    let record = polykit_metering::record_usage(user_id, "distribute", dims)
     eslite_insert("metering_scatter", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
     emit(metering_events, record)
     record
@@ -230,9 +230,9 @@ circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_meter
 circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> QuotaStatus
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/metering
-    precision C
-    observe metrics: [quota_checks, quota_violations, quota_ok]
+    lex global/org/polylabs/files/metering
+    @precision C
+    @observe metrics: [quota_checks, quota_violations, quota_ok]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.05 }
     invariant "tier_limits_positive" { all_dims_positive(tier.limits) }
     property safety "quota_enforced" { violations implies !within_quota }
@@ -259,9 +259,9 @@ circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> Quot
 circuit get_usage(user_id: UserId, period_start_ms: u64, period_end_ms: u64) -> UsageSummary
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/metering
-    precision C
-    observe metrics: [usage_queries, usage_query_latency_ms]
+    lex global/org/polylabs/files/metering
+    @precision C
+    @observe metrics: [usage_queries, usage_query_latency_ms]
     monitor "usage_query_latency" { usage_query_latency_ms < 100 }
     invariant "valid_period" { period_start_ms < period_end_ms }
     property liveness "usage_eventually_returned" { eventually(result != null) }

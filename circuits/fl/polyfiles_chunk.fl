@@ -26,7 +26,7 @@ data Chunk : files v1 {
     size: ChunkSize,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         redact [data]
         infer on_write
@@ -41,7 +41,7 @@ data Shard : files v1 {
     parity: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         redact [data]
         infer on_write
@@ -55,7 +55,7 @@ data ChunkResult : files v1 {
     original_size: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         redact [file_hash]
         infer on_write
@@ -67,7 +67,7 @@ data ErasureParams : files v1 {
     n: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -81,7 +81,7 @@ data ErasureResult : files v1 {
     chunk_index: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         redact [shards]
         infer on_write
@@ -95,7 +95,7 @@ data ReassembleResult : files v1 {
     chunks_used: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/chunk
+    govern lex global/org/polylabs/files/chunk
     cortex {
         redact [file_data, file_hash]
         infer on_write
@@ -105,9 +105,9 @@ data ReassembleResult : files v1 {
 // --- Split file into 4 MB chunks ---
 circuit chunk_file(file_data: bytes) -> ChunkResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/chunk
-    precision C
-    observe metrics: [files_chunked, chunks_created, bytes_chunked]
+    lex global/org/polylabs/files/chunk
+    @precision C
+    @observe metrics: [files_chunked, chunks_created, bytes_chunked]
     monitor "chunk_throughput" { bytes_per_sec > 50_000_000 }
     invariant "file_not_empty" { len(file_data) > 0 }
     invariant "file_within_limit" { len(file_data) <= MAX_FILE_SIZE }
@@ -142,9 +142,9 @@ circuit chunk_file(file_data: bytes) -> ChunkResult
 // --- Erasure-code chunks into k-of-n shards ---
 circuit erasure_encode(chunks: list<Chunk>, k: u8, n: u8) -> list<ErasureResult>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/chunk
-    precision C
-    observe metrics: [erasure_encodes, shards_created, parity_shards_created]
+    lex global/org/polylabs/files/chunk
+    @precision C
+    @observe metrics: [erasure_encodes, shards_created, parity_shards_created]
     monitor "encode_latency" { encode_time_ms < 500 }
     invariant "k_less_than_n" { k < n }
     invariant "k_minimum" { k >= 2 }
@@ -195,9 +195,9 @@ circuit erasure_encode(chunks: list<Chunk>, k: u8, n: u8) -> list<ErasureResult>
 // --- Decode k-of-n shards back into original chunks ---
 circuit erasure_decode(shards: list<Shard>, k: u8) -> list<Chunk>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/chunk
-    precision C
-    observe metrics: [erasure_decodes, shards_consumed, recovery_ops]
+    lex global/org/polylabs/files/chunk
+    @precision C
+    @observe metrics: [erasure_decodes, shards_consumed, recovery_ops]
     monitor "decode_success_rate" { successful_decodes / total_decodes > 0.999 }
     invariant "sufficient_shards" { len(shards) >= k }
     property safety "decode_integrity" { decoded_chunk.hash == sha3_256(decoded_chunk.data) }
@@ -228,9 +228,9 @@ circuit erasure_decode(shards: list<Shard>, k: u8) -> list<Chunk>
 // --- Reassemble ordered chunks into original file ---
 circuit reassemble_file(chunks: list<Chunk>) -> ReassembleResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/chunk
-    precision C
-    observe metrics: [files_reassembled, bytes_reassembled]
+    lex global/org/polylabs/files/chunk
+    @precision C
+    @observe metrics: [files_reassembled, bytes_reassembled]
     monitor "reassembly_integrity" { hash_matches == true }
     invariant "chunks_ordered" { is_contiguous(chunks, |c| c.index) }
     invariant "no_empty_chunks" { all(chunks, |c| len(c.data) > 0) }
@@ -274,7 +274,7 @@ test golden "chunk_basic_file" {
 
 test golden "chunk_roundtrip_erasure" {
     input {
-        file_data: bytes("Erasure coding roundtrip test payload for PolyFiles scatter storage.")
+        file_data: bytes("Erasure coding roundtrip test payload for PolyFiles distribute storage.")
         k: 3
         n: 5
     }
@@ -292,25 +292,25 @@ test golden "chunk_roundtrip_erasure" {
     }
 }
 
-kat_vector "sha3_256_empty" {
+golden_test "sha3_256_empty" {
     function: "sha3_256"
     input: bytes("")
     expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
 }
 
-kat_vector "sha3_256_abc" {
+golden_test "sha3_256_abc" {
     function: "sha3_256"
     input: bytes("abc")
     expected: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
 }
 
-kat_vector "blake3_empty" {
+golden_test "blake3_empty" {
     function: "blake3"
     input: bytes("")
     expected: hex("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
 }
 
-kat_vector "blake3_abc" {
+golden_test "blake3_abc" {
     function: "blake3"
     input: bytes("abc")
     expected: hex("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")

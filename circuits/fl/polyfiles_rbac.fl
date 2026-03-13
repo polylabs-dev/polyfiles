@@ -33,7 +33,7 @@ data UserInfo : files v1 {
     created_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -49,7 +49,7 @@ data FileInfo : files v1 {
     created_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -67,7 +67,7 @@ data ShareInfo : files v1 {
     revoked: bool,
 }
     store graph
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [grantor_id, grantee_id]
         infer on_write
@@ -80,7 +80,7 @@ data OwnsEdge : files v1 {
     since_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -94,7 +94,7 @@ data SharedWithEdge : files v1 {
     role: Role,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -110,7 +110,7 @@ data RoleAssignment : files v1 {
     signature: bytes(4627),
 }
     store kv
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         redact [signature]
         obfuscate [user_id, assigned_by]
@@ -129,7 +129,7 @@ data AccessCheckResult : files v1 {
     checked_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/rbac
+    govern lex global/org/polylabs/files/rbac
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -183,7 +183,7 @@ graph files_roles {
     constraint "no_self_share" { share_info.grantor_id != share_info.grantee_id }
     constraint "role_valid" { role in [Owner, Editor, Viewer, Auditor] }
 
-    observe files_roles: [permissions, role] threshold: {
+    @observe files_roles: [permissions, role] threshold: {
         anomaly_score 0.9
         baseline_window 300
     }
@@ -231,9 +231,9 @@ circuit assign_role(
 ) -> RoleAssignment
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/rbac
-    precision C
-    observe metrics: [role_assignments, role_distribution, assignment_latency_ms]
+    lex global/org/polylabs/files/rbac
+    @precision C
+    @observe metrics: [role_assignments, role_distribution, assignment_latency_ms]
     monitor "assignment_rate" { role_assignments > 0 }
     invariant "assigner_authenticated" { assigner_derived == assigner_id }
     invariant "no_self_assignment" { assigner_id != target_user_id || role == Role::Owner }
@@ -280,9 +280,9 @@ circuit assign_role(
 circuit check_access(user_id: UserId, file_id: FileId) -> AccessCheckResult
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/rbac
-    precision C
-    observe metrics: [access_checks, access_grants, access_denials]
+    lex global/org/polylabs/files/rbac
+    @precision C
+    @observe metrics: [access_checks, access_grants, access_denials]
     monitor "access_denial_rate" { access_denials / access_checks < 0.3 }
     invariant "user_id_valid" { user_id != zeroed(16) }
     invariant "file_id_valid" { file_id != zeroed(32) }
@@ -333,9 +333,9 @@ circuit revoke_role(
 ) -> bool
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/rbac
-    precision C
-    observe metrics: [role_revocations, revocation_latency_ms]
+    lex global/org/polylabs/files/rbac
+    @precision C
+    @observe metrics: [role_revocations, revocation_latency_ms]
     monitor "revocation_rate" { role_revocations > 0 }
     invariant "revoker_authenticated" { revoker_derived == revoker_id }
     property safety "only_owner_revokes" { revoker_role == Role::Owner }
@@ -363,9 +363,9 @@ circuit revoke_role(
 circuit list_file_roles(file_id: FileId) -> list<RoleAssignment>
     profile poly_framework_standard
     target lattice
-    lex esn/global/org/polylabs/files/rbac
-    precision C
-    observe metrics: [role_list_queries]
+    lex global/org/polylabs/files/rbac
+    @precision C
+    @observe metrics: [role_list_queries]
     invariant "file_id_valid" { file_id != zeroed(32) }
     property liveness "list_eventually_returns" { eventually(result != null) }
     wasm_abi [eslite_query]
