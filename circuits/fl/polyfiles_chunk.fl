@@ -19,56 +19,99 @@ type ShardIndex = u8
 const CHUNK_SIZE_BYTES: u32 = 4_194_304
 const MAX_FILE_SIZE: u64 = 53_687_091_200
 
-type Chunk = struct {
+data Chunk : files v1 {
     index: u32,
     data: bytes,
     hash: bytes(32),
     size: ChunkSize,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        redact [data]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type Shard = struct {
+data Shard : files v1 {
     chunk_index: u32,
     shard_index: ShardIndex,
     data: bytes,
     hash: bytes(32),
     parity: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        redact [data]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ChunkResult = struct {
+data ChunkResult : files v1 {
     chunks: list<Chunk>,
     total_chunks: u32,
     file_hash: bytes(32),
     original_size: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        redact [file_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ErasureParams = struct {
+data ErasureParams : files v1 {
     k: u8,
     n: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ErasureResult = struct {
+data ErasureResult : files v1 {
     shards: list<Shard>,
     total_shards: u32,
     data_shards: u8,
     parity_shards: u8,
     chunk_index: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        redact [shards]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ReassembleResult = struct {
+data ReassembleResult : files v1 {
     file_data: bytes,
     file_hash: bytes(32),
     total_size: u64,
     chunks_used: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/chunk
+    cortex {
+        redact [file_data, file_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 // --- Split file into 4 MB chunks ---
 circuit chunk_file(file_data: bytes) -> ChunkResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/chunk
+    precision C
     observe metrics: [files_chunked, chunks_created, bytes_chunked]
     monitor "chunk_throughput" { bytes_per_sec > 50_000_000 }
     invariant "file_not_empty" { len(file_data) > 0 }
     invariant "file_within_limit" { len(file_data) <= MAX_FILE_SIZE }
+    property safety "chunk_hash_integrity" { all(chunks, |c| c.hash == sha3_256(c.data)) }
     meters [compute_cycles, bandwidth, storage]
 {
     let file_hash = blake3(file_data)
@@ -100,11 +143,13 @@ circuit chunk_file(file_data: bytes) -> ChunkResult
 circuit erasure_encode(chunks: list<Chunk>, k: u8, n: u8) -> list<ErasureResult>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/chunk
+    precision C
     observe metrics: [erasure_encodes, shards_created, parity_shards_created]
     monitor "encode_latency" { encode_time_ms < 500 }
     invariant "k_less_than_n" { k < n }
     invariant "k_minimum" { k >= 2 }
     invariant "n_maximum" { n <= 13 }
+    property safety "shard_count_matches" { total_shards == n }
     meters [compute_cycles, bandwidth]
 {
     let parity_count = n - k
@@ -151,9 +196,11 @@ circuit erasure_encode(chunks: list<Chunk>, k: u8, n: u8) -> list<ErasureResult>
 circuit erasure_decode(shards: list<Shard>, k: u8) -> list<Chunk>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/chunk
+    precision C
     observe metrics: [erasure_decodes, shards_consumed, recovery_ops]
     monitor "decode_success_rate" { successful_decodes / total_decodes > 0.999 }
     invariant "sufficient_shards" { len(shards) >= k }
+    property safety "decode_integrity" { decoded_chunk.hash == sha3_256(decoded_chunk.data) }
     meters [compute_cycles, bandwidth]
 {
     let grouped = group_by(shards, |s| s.chunk_index)
@@ -182,10 +229,13 @@ circuit erasure_decode(shards: list<Shard>, k: u8) -> list<Chunk>
 circuit reassemble_file(chunks: list<Chunk>) -> ReassembleResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/chunk
+    precision C
     observe metrics: [files_reassembled, bytes_reassembled]
     monitor "reassembly_integrity" { hash_matches == true }
     invariant "chunks_ordered" { is_contiguous(chunks, |c| c.index) }
     invariant "no_empty_chunks" { all(chunks, |c| len(c.data) > 0) }
+    property safety "reassembly_deterministic" { reassemble(chunks) == reassemble(chunks) }
+    property liveness "eventually_reassembled" { eventually(file_data != empty) }
     meters [compute_cycles, bandwidth]
 {
     let sorted = sort_by(chunks, |c| c.index)

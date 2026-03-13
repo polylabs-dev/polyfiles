@@ -14,7 +14,7 @@ import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Data Declarations with Stratum + Cortex ─────────────────────────
 
-data PlatformMetrics : app v1 {
+data PlatformMetrics : files v1 {
     blinded_user_id: bytes(32),
     cohort_ok: bool,
     cohort_size: u32,
@@ -192,6 +192,8 @@ circuit files_anomaly_check(
     streamsight true
     observe metrics: [anomaly_checks, anomaly_detections]
     monitor "anomaly_rate" { anomaly_detections < 50/hr }
+    invariant "window_positive" { window_ms > 0 }
+    property safety "critical_detected" { max_anomaly > 0.8 implies status == Critical }
     cortex {
         ai_feed {
             model "files_health_classifier"

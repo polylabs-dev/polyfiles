@@ -1,0 +1,454 @@
+// PolyFiles RBAC — Role-based access control graph for Poly Files
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/rbac
+//   RBAC graph with 4 roles: Owner, Editor, Viewer, Auditor.
+//   User→File ownership, File→Share→User sharing, and per-user
+//   permission overlays. ML-DSA-87 signed role assignments.
+//   CSR-tiered storage (BRAM/DDR/NVMe) for access-pattern locality.
+
+import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Types ──────────────────────────────────────────────────────────
+
+type UserId = bytes(16)
+type FileId = bytes(32)
+type ShareId = bytes(32)
+
+type Role = enum {
+    Owner,
+    Editor,
+    Viewer,
+    Auditor,
+}
+
+// ── Stratum Data Declarations ──────────────────────────────────────
+
+data UserInfo : files v1 {
+    user_id: UserId,
+    public_key: bytes(2592),
+    display_hash: bytes(32),
+    role_count: u32,
+    created_ms: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data FileInfo : files v1 {
+    file_id: FileId,
+    owner_id: UserId,
+    classification: u8,
+    size_bytes: u64,
+    share_count: u32,
+    created_ms: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data ShareInfo : files v1 {
+    share_id: ShareId,
+    file_id: FileId,
+    grantor_id: UserId,
+    grantee_id: UserId,
+    role: Role,
+    granted_ms: u64,
+    expires_ms: u64,
+    revoked: bool,
+}
+    store graph
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [grantor_id, grantee_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data OwnsEdge : files v1 {
+    user_id: UserId,
+    file_id: FileId,
+    since_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data SharedWithEdge : files v1 {
+    file_id: FileId,
+    share_id: ShareId,
+    user_id: UserId,
+    role: Role,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data RoleAssignment : files v1 {
+    user_id: UserId,
+    file_id: FileId,
+    role: Role,
+    assigned_by: UserId,
+    assigned_ms: u64,
+    signature: bytes(4627),
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        redact [signature]
+        obfuscate [user_id, assigned_by]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data AccessCheckResult : files v1 {
+    user_id: UserId,
+    file_id: FileId,
+    can_read: bool,
+    can_write: bool,
+    can_share: bool,
+    can_audit: bool,
+    role: Role,
+    checked_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/rbac
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+// ── Graph Declaration ──────────────────────────────────────────────
+
+graph files_roles {
+    node User : UserInfo {
+        key user_id
+    }
+    node File : FileInfo {
+        key file_id
+    }
+    node Share : ShareInfo {
+        key share_id
+    }
+
+    edge owns : User -> File {
+        data OwnsEdge
+        cardinality one_to_many
+    }
+    edge shared_with : File -> Share -> User {
+        data SharedWithEdge
+        cardinality many_to_many
+    }
+
+    overlay permissions on User {
+        can_read: bool
+        can_write: bool
+        can_share: bool
+        can_audit: bool
+    }
+
+    storage csr {
+        tier bram { capacity: 10_000 }
+        tier ddr { capacity: 1_000_000 }
+        tier nvme { capacity: 100_000_000 }
+    }
+
+    sign ml_dsa_87
+
+    ai_feed access_patterns
+
+    index roles_by_user { key user_id, order assigned_ms desc }
+    index roles_by_file { key file_id, order assigned_ms desc }
+    index shares_by_grantee { key grantee_id, order granted_ms desc }
+
+    constraint "owner_unique_per_file" { count(owns_edges where file_id == f) == 1 }
+    constraint "no_self_share" { share_info.grantor_id != share_info.grantee_id }
+    constraint "role_valid" { role in [Owner, Editor, Viewer, Auditor] }
+
+    observe files_roles: [permissions, role] threshold: {
+        anomaly_score 0.9
+        baseline_window 300
+    }
+
+    traverse user_files(user: User) -> [File] {
+        match (user) -[owns]-> (file: File)
+        return file
+    }
+
+    traverse file_users(file: File) -> [User] {
+        match (user: User) -[owns]-> (file)
+        union match (_) -[shared_with]-> (share: Share) -[shared_with]-> (user: User)
+        return user
+    }
+
+    traverse accessible_files(user: User) -> [File] {
+        match (user) -[owns]-> (file: File)
+        union match (_) -[shared_with where revoked == false]-> (share: Share) through (file: File)
+        return file
+    }
+}
+
+series rbac_series: files_roles
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Streams ────────────────────────────────────────────────────────
+
+stream rbac_events: event<RoleAssignment>
+    | throttle 200/s burst 500
+    | topic "polylabs.files.rbac.{user_id}"
+    | retention permanent
+    | hash_chain true
+
+// ── Circuits ───────────────────────────────────────────────────────
+
+circuit assign_role(
+    assigner_id: UserId,
+    assigner_pk: bytes(2592),
+    assigner_sk: bytes(4896),
+    target_user_id: UserId,
+    file_id: FileId,
+    role: Role,
+) -> RoleAssignment
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/rbac
+    precision C
+    observe metrics: [role_assignments, role_distribution, assignment_latency_ms]
+    monitor "assignment_rate" { role_assignments > 0 }
+    invariant "assigner_authenticated" { assigner_derived == assigner_id }
+    invariant "no_self_assignment" { assigner_id != target_user_id || role == Role::Owner }
+    property safety "only_owner_assigns" { assigner_role == Role::Owner || assigner_role == Role::Editor }
+    property liveness "assignment_eventually_stored" { eventually(eslite_query("role_assignments", key) != null) }
+    wasm_abi [eslite_insert, eslite_query, stream_emit, now]
+{
+    let assigner_derived = polykit_identity::derive_user_id(assigner_pk)
+    if assigner_derived != assigner_id { return error("identity_mismatch") }
+
+    let assigner_role = eslite_query("user_roles", assigner_id ++ file_id)
+    if assigner_role == null || (assigner_role.role != Role::Owner && role != Role::Viewer) {
+        return error("insufficient_permissions")
+    }
+
+    let ts = now()
+    let payload = target_user_id ++ file_id ++ u8_to_bytes(role) ++ u64_to_bytes(ts)
+    let signature = polykit_identity::sign_message(assigner_sk, payload)
+
+    let assignment = RoleAssignment {
+        user_id: target_user_id,
+        file_id: file_id,
+        role: role,
+        assigned_by: assigner_id,
+        assigned_ms: ts,
+        signature: signature,
+    }
+
+    eslite_insert("role_assignments", target_user_id ++ file_id, assignment)
+    eslite_insert("user_roles", target_user_id ++ file_id, assignment)
+
+    let perms = match role {
+        Role::Owner => { can_read: true, can_write: true, can_share: true, can_audit: true },
+        Role::Editor => { can_read: true, can_write: true, can_share: false, can_audit: false },
+        Role::Viewer => { can_read: true, can_write: false, can_share: false, can_audit: false },
+        Role::Auditor => { can_read: true, can_write: false, can_share: false, can_audit: true },
+    }
+    eslite_insert("permissions", target_user_id ++ file_id, perms)
+
+    emit(rbac_events, assignment)
+    assignment
+}
+
+circuit check_access(user_id: UserId, file_id: FileId) -> AccessCheckResult
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/rbac
+    precision C
+    observe metrics: [access_checks, access_grants, access_denials]
+    monitor "access_denial_rate" { access_denials / access_checks < 0.3 }
+    invariant "user_id_valid" { user_id != zeroed(16) }
+    invariant "file_id_valid" { file_id != zeroed(32) }
+    property safety "no_access_without_role" { role_assignment == null implies all_false(permissions) }
+    wasm_abi [eslite_query, now]
+{
+    let ts = now()
+    let assignment = eslite_query("user_roles", user_id ++ file_id)
+
+    if assignment == null {
+        return AccessCheckResult {
+            user_id: user_id,
+            file_id: file_id,
+            can_read: false,
+            can_write: false,
+            can_share: false,
+            can_audit: false,
+            role: Role::Viewer,
+            checked_ms: ts,
+        }
+    }
+
+    let (can_read, can_write, can_share, can_audit) = match assignment.role {
+        Role::Owner => (true, true, true, true),
+        Role::Editor => (true, true, false, false),
+        Role::Viewer => (true, false, false, false),
+        Role::Auditor => (true, false, false, true),
+    }
+
+    AccessCheckResult {
+        user_id: user_id,
+        file_id: file_id,
+        can_read: can_read,
+        can_write: can_write,
+        can_share: can_share,
+        can_audit: can_audit,
+        role: assignment.role,
+        checked_ms: ts,
+    }
+}
+
+circuit revoke_role(
+    revoker_id: UserId,
+    revoker_pk: bytes(2592),
+    revoker_sig: bytes(4627),
+    target_user_id: UserId,
+    file_id: FileId,
+) -> bool
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/rbac
+    precision C
+    observe metrics: [role_revocations, revocation_latency_ms]
+    monitor "revocation_rate" { role_revocations > 0 }
+    invariant "revoker_authenticated" { revoker_derived == revoker_id }
+    property safety "only_owner_revokes" { revoker_role == Role::Owner }
+    wasm_abi [eslite_query, eslite_delete, now]
+{
+    let revoker_derived = polykit_identity::derive_user_id(revoker_pk)
+    if revoker_derived != revoker_id { return false }
+
+    let sig_valid = polykit_identity::verify_signature(revoker_pk, target_user_id ++ file_id, revoker_sig)
+    if !sig_valid { return false }
+
+    let revoker_role = eslite_query("user_roles", revoker_id ++ file_id)
+    if revoker_role == null || revoker_role.role != Role::Owner { return false }
+
+    let target_role = eslite_query("user_roles", target_user_id ++ file_id)
+    if target_role == null { return false }
+    if target_role.role == Role::Owner { return false }
+
+    eslite_delete("user_roles", target_user_id ++ file_id)
+    eslite_delete("role_assignments", target_user_id ++ file_id)
+    eslite_delete("permissions", target_user_id ++ file_id)
+    true
+}
+
+circuit list_file_roles(file_id: FileId) -> list<RoleAssignment>
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/rbac
+    precision C
+    observe metrics: [role_list_queries]
+    invariant "file_id_valid" { file_id != zeroed(32) }
+    property liveness "list_eventually_returns" { eventually(result != null) }
+    wasm_abi [eslite_query]
+{
+    eslite_query("roles_by_file", file_id)
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "assign_and_check_owner_role" {
+    steps {
+        let (pk, sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("rbac-test-file"))
+
+        let assignment = assign_role(owner_id, pk, sk, owner_id, file_id, Role::Owner)
+        let access = check_access(owner_id, file_id)
+    }
+    assert {
+        assignment.role == Role::Owner
+        assignment.user_id == owner_id
+        access.can_read == true
+        access.can_write == true
+        access.can_share == true
+        access.can_audit == true
+    }
+}
+
+test golden "assign_viewer_limited_access" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let (viewer_pk, _) = mldsa_keygen()
+        let viewer_id = polykit_identity::derive_user_id(viewer_pk)
+        let file_id = sha3_256(bytes("rbac-viewer-file"))
+
+        let _owner = assign_role(owner_id, owner_pk, owner_sk, owner_id, file_id, Role::Owner)
+        let _viewer = assign_role(owner_id, owner_pk, owner_sk, viewer_id, file_id, Role::Viewer)
+        let access = check_access(viewer_id, file_id)
+    }
+    assert {
+        access.can_read == true
+        access.can_write == false
+        access.can_share == false
+        access.can_audit == false
+        access.role == Role::Viewer
+    }
+}
+
+test golden "revoke_editor_role" {
+    steps {
+        let (owner_pk, owner_sk) = mldsa_keygen()
+        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let (editor_pk, _) = mldsa_keygen()
+        let editor_id = polykit_identity::derive_user_id(editor_pk)
+        let file_id = sha3_256(bytes("rbac-revoke-file"))
+
+        let _owner = assign_role(owner_id, owner_pk, owner_sk, owner_id, file_id, Role::Owner)
+        let _editor = assign_role(owner_id, owner_pk, owner_sk, editor_id, file_id, Role::Editor)
+
+        let sig = polykit_identity::sign_message(owner_sk, editor_id ++ file_id)
+        let revoked = revoke_role(owner_id, owner_pk, sig, editor_id, file_id)
+        let access = check_access(editor_id, file_id)
+    }
+    assert {
+        revoked == true
+        access.can_read == false
+        access.can_write == false
+    }
+}
+
+test golden "no_access_without_role" {
+    steps {
+        let (pk, _) = mldsa_keygen()
+        let user_id = polykit_identity::derive_user_id(pk)
+        let file_id = sha3_256(bytes("rbac-no-role-file"))
+
+        let access = check_access(user_id, file_id)
+    }
+    assert {
+        access.can_read == false
+        access.can_write == false
+        access.can_share == false
+        access.can_audit == false
+    }
+}

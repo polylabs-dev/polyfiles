@@ -31,44 +31,75 @@ type ClassificationSource = enum {
     PolicyFile,
 }
 
-type ScatterPolicy = struct {
+data ScatterPolicy : files v1 {
     k: u8,
     n: u8,
     jurisdictions: u8,
     min_providers: u8,
     geo_diversity: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/classify
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ClassificationRule = struct {
+data ClassificationRule : files v1 {
     pattern: string,
     classification: Classification,
     source: ClassificationSource,
     priority: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/classify
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ClassificationPolicy = struct {
+data ClassificationPolicy : files v1 {
     rules: list<ClassificationRule>,
     default_classification: Classification,
     enforce_minimum: bool,
     minimum_level: Classification,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/classify
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ClassifyResult = struct {
+data ClassifyResult : files v1 {
     classification: Classification,
     source: ClassificationSource,
     scatter_policy: ScatterPolicy,
     confidence: f32,
     rule_matched: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/classify
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ValidationResult = struct {
+data ValidationResult : files v1 {
     valid: bool,
     reason: string,
     required_level: Classification,
     actual_level: Classification,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/classify
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 // --- Assign classification to a file ---
+@guard(block_on: classification_mismatch)
 circuit classify_file(
     file_path: string,
     parent_classification: option<Classification>,
@@ -78,6 +109,7 @@ circuit classify_file(
 ) -> ClassifyResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/classify
+    precision C
     observe metrics: [classifications_assigned, classification_changes, source_distribution]
     monitor "classification_latency" { classify_time_ms < 10 }
     invariant "result_not_below_parent" {
@@ -86,6 +118,8 @@ circuit classify_file(
     invariant "policy_minimum_enforced" {
         policy.is_none() || !policy.unwrap().enforce_minimum || result.classification >= policy.unwrap().minimum_level
     }
+    property safety "classification_monotonic_with_parent" { result.classification >= parent_classification }
+    fuzz_target
     meters [compute_cycles, executions]
 {
     let base_level = Classification::Public
@@ -145,9 +179,11 @@ circuit classify_file(
 circuit parse_polyclassification(content: string) -> list<ClassificationRule>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/classify
+    precision C
     observe metrics: [polyclassification_parses, rules_parsed]
     monitor "parse_errors" { parse_failures == 0 }
     invariant "content_not_empty" { len(content) > 0 }
+    property safety "parsed_rules_valid" { all(result, |r| r.classification in Classification) }
     meters [compute_cycles]
 {
     let lines = split_lines(content)
@@ -186,9 +222,11 @@ circuit parse_polyclassification(content: string) -> list<ClassificationRule>
 circuit lookup_scatter_policy(classification: Classification) -> ScatterPolicy
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/classify
+    precision C
     observe metrics: [scatter_lookups]
     invariant "valid_k_n" { result.k < result.n }
     invariant "jurisdiction_positive" { result.jurisdictions >= 1 }
+    property safety "k_less_than_n" { result.k < result.n }
 {
     lookup_scatter_table(classification)
 }
@@ -200,8 +238,11 @@ circuit validate_classification(
 ) -> ValidationResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/classify
+    precision C
     observe metrics: [classification_validations, validation_failures]
     monitor "validation_rejections" { rejection_rate < 0.1 }
+    invariant "policy_has_minimum" { policy.minimum_level in Classification }
+    property safety "validation_consistent" { validate(c, p) == validate(c, p) }
     meters [compute_cycles]
 {
     let valid = if policy.enforce_minimum {
@@ -225,6 +266,7 @@ circuit validate_classification(
 // --- Internal: scatter policy lookup table ---
 circuit lookup_scatter_table(level: Classification) -> ScatterPolicy
     profile poly_framework_standard
+    precision C
 {
     match level {
         Classification::Public => ScatterPolicy {
@@ -248,6 +290,7 @@ circuit lookup_scatter_table(level: Classification) -> ScatterPolicy
 // --- Internal: match file path against policy rules ---
 circuit match_policy_rules(rules: list<ClassificationRule>, file_path: string) -> option<ClassificationRule>
     profile poly_framework_standard
+    precision C
 {
     let best: option<ClassificationRule> = none
     for rule in rules {

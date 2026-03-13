@@ -34,7 +34,7 @@ type ConfidenceAction = enum {
     RequireManual,
 }
 
-type ClassificationSuggestion = struct {
+data ClassificationSuggestion : files v1 {
     tag: Classification,
     confidence: f32,
     action: ConfidenceAction,
@@ -42,28 +42,55 @@ type ClassificationSuggestion = struct {
     sanitized: bool,
     reasoning: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/eslm
+    cortex {
+        redact [reasoning]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ClassificationAlternative = struct {
+data ClassificationAlternative : files v1 {
     tag: Classification,
     confidence: f32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/eslm
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type SanitizedContent = struct {
+data SanitizedContent : files v1 {
     content: bytes,
     pii_count: u32,
     transforms_applied: u32,
     audit_hash: bytes(32),
     compliance_flags: list<string>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/eslm
+    cortex {
+        redact [content, audit_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type PiiDetection = struct {
+data PiiDetection : files v1 {
     entity_type: string,
     start_offset: u32,
     end_offset: u32,
     placeholder: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/eslm
+    cortex {
+        redact [start_offset, end_offset]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type FeedbackRecord = struct {
+data FeedbackRecord : files v1 {
     sample_hash: bytes(32),
     suggested_tag: Classification,
     corrected_tag: option<Classification>,
@@ -72,6 +99,13 @@ type FeedbackRecord = struct {
     timestamp: u64,
     weight: f32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/eslm
+    cortex {
+        redact [reviewer_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 const THRESHOLD_AUTO_APPLY: f32 = 0.8
 const THRESHOLD_SUGGEST_CONFIRM: f32 = 0.5
@@ -80,6 +114,7 @@ stream eslm_telemetry: event<ClassificationSuggestion>
     | throttle 100/s burst 200
 
 // --- Classify file content using on-device ESLM ---
+@guard(block_on: classification_mismatch)
 circuit classify_content(
     content_sample: bytes,
     file_extension: string,
@@ -87,11 +122,23 @@ circuit classify_content(
 ) -> ClassificationSuggestion
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/eslm
+    precision C
     observe metrics: [eslm_classifications, confidence_distribution, auto_apply_count, manual_required_count]
     monitor "eslm_latency" { classify_time_ms < 200 }
     monitor "confidence_quality" { avg_confidence > 0.6 }
     invariant "sample_size_limit" { len(content_sample) <= 4096 }
     invariant "content_never_emitted" { telemetry_contains(content_sample) == false }
+    property safety "content_never_leaves_wasm" { no_emit(content_sample) }
+    fuzz_target
+    cortex {
+        ai_feed {
+            model "eslm_content_classifier"
+            input [content_sample, file_extension, file_path]
+            output [tag, confidence, reasoning]
+            retrain on_drift
+            drift_threshold 0.10
+        }
+    }
     meters [compute_cycles, executions]
 {
     let sanitized = sanitize_pipeline(content_sample)
@@ -137,8 +184,11 @@ circuit classify_content(
 circuit classify_filename(filename: string, path: string) -> ClassificationSuggestion
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/eslm
+    precision C
     observe metrics: [filename_classifications]
     monitor "filename_classify_latency" { classify_time_ms < 10 }
+    invariant "filename_non_empty" { len(filename) > 0 }
+    property safety "no_content_analysis" { content_sample == null }
     meters [compute_cycles]
 {
     let ext = extract_extension(filename)
@@ -186,10 +236,12 @@ circuit submit_human_feedback(
 ) -> FeedbackRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/files/eslm
+    precision C
     observe metrics: [feedback_submissions, correction_rate, feedback_weight_total]
     monitor "feedback_volume" { feedback_submissions > 0 }
     invariant "rating_valid" { rating >= 1 && rating <= 5 }
     invariant "reviewer_not_empty" { reviewer_hash != zeroed(32) }
+    property safety "feedback_authenticated" { reviewer_hash != zeroed(32) }
     meters [compute_cycles, executions]
 {
     let weight: f32 = if correction.is_some() { 3.0 } else { 1.0 }
@@ -210,9 +262,11 @@ circuit submit_human_feedback(
 // --- Internal: 3-stage PII sanitization pipeline ---
 circuit sanitize_pipeline(content: bytes) -> SanitizedContent
     profile poly_framework_sensitive
+    precision C
     constant_time true
     observe metrics: [sanitization_runs, pii_detections, transforms_applied]
     invariant "output_no_raw_pii" { contains_raw_pii(result.content) == false }
+    property safety "pii_fully_redacted" { contains_raw_pii(result.content) == false }
 {
     let pii_detections = detect_pii(content)
     let stage1_output = apply_pii_placeholders(content, pii_detections)
@@ -243,6 +297,7 @@ circuit sanitize_pipeline(content: bytes) -> SanitizedContent
 // --- Internal: PII detection (Stage 1) ---
 circuit detect_pii(content: bytes) -> list<PiiDetection>
     profile poly_framework_sensitive
+    precision C
     constant_time true
 {
     let detections = list_new()
@@ -274,6 +329,7 @@ circuit detect_pii(content: bytes) -> list<PiiDetection>
 // --- Internal: value transformation (Stage 2) ---
 circuit transform_values(content: bytes) -> struct { content: bytes, transforms: u32 }
     profile poly_framework_standard
+    precision C
 {
     let result = content
     let count: u32 = 0
@@ -293,6 +349,7 @@ circuit transform_values(content: bytes) -> struct { content: bytes, transforms:
 // --- Internal: extension-based signal ---
 circuit classify_by_extension(ext: string) -> map<Classification, f32>
     profile poly_framework_standard
+    precision C
 {
     match to_lower(ext) {
         "pdf" | "docx" | "xlsx" => map_from([
@@ -324,6 +381,7 @@ circuit classify_by_extension(ext: string) -> map<Classification, f32>
 // --- Internal: path-based signal ---
 circuit classify_by_path_patterns(path: string) -> map<Classification, f32>
     profile poly_framework_standard
+    precision C
 {
     let lower = to_lower(path)
     if contains(lower, "/secret") || contains(lower, "/restricted") {

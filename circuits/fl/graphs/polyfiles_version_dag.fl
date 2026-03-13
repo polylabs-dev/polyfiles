@@ -15,7 +15,7 @@ import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
-data VersionNode : app v1 {
+data VersionNode : files v1 {
     version_id: bytes(32),
     file_id: bytes(32),
     author_id: bytes(16),
@@ -34,6 +34,7 @@ data VersionNode : app v1 {
     govern lex esn/global/org/polylabs/files
     cortex {
         obfuscate [author_id]
+        redact [signature, author_pk]
         infer on_write
         on_anomaly alert "files-team"
     }
@@ -47,12 +48,18 @@ type ManifestHash = bytes(32)
 type MerkleRoot = bytes(32)
 type MerkleProof = bytes(1024)
 
-type ParentEdge = struct {
+data ParentEdge : files v1 {
     child_id: VersionId,
     parent_id: VersionId,
     edge_type: EdgeType,
     merge_strategy: MergeStrategy,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 type EdgeType = enum {
     Linear,
@@ -67,42 +74,72 @@ type MergeStrategy = enum {
     AutoMerge,
 }
 
-type AncestorResult = struct {
+data AncestorResult : files v1 {
     version_id: VersionId,
     ancestors: [VersionId],
     depth: u64,
     proof: MerkleProof,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type DescendantResult = struct {
+data DescendantResult : files v1 {
     version_id: VersionId,
     descendants: [VersionId],
     depth: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type CommonAncestorResult = struct {
+data CommonAncestorResult : files v1 {
     ancestor_id: VersionId,
     depth_a: u64,
     depth_b: u64,
     proof_a: MerkleProof,
     proof_b: MerkleProof,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type MergeCandidate = struct {
+data MergeCandidate : files v1 {
     version_a: VersionId,
     version_b: VersionId,
     common_ancestor: VersionId,
     strategy: MergeStrategy,
     conflict_detected: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type VersionProof = struct {
+data VersionProof : files v1 {
     version_id: VersionId,
     merkle_root: MerkleRoot,
     proof_path: MerkleProof,
     verified: bool,
     author_verified: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 // ── DAG Declaration ────────────────────────────────────────────────
 
@@ -121,9 +158,9 @@ dag version_history {
     sign ml_dsa_87
 
     storage merkle_csr {
-        hot @bram,
-        warm @ddr,
-        cold @nvme,
+        tier bram { capacity: 10_000 }
+        tier ddr { capacity: 1_000_000 }
+        tier nvme { capacity: 100_000_000 }
     }
 
     attest povc {
@@ -203,6 +240,8 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     invariant "author_authenticated" { author_derived == author_id }
     invariant "parent_count_valid" { parent_count <= 4 }
     invariant "manifest_non_empty" { len(manifest_hash) == 32 }
+    property safety "version_signed" { mldsa_verify(signature, author_pk) == true }
+    property liveness "version_eventually_stored" { eventually(eslite_query("versions", version_id) != null) }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
     let author_derived = polykit_identity::derive_user_id(author_pk)
@@ -292,6 +331,7 @@ circuit get_ancestors(version_id: VersionId, max_depth: u64) -> AncestorResult
     observe metrics: [ancestor_queries, traversal_depth, nodes_visited]
     monitor "traversal_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
+    property safety "ancestors_acyclic" { no_cycles(ancestors) }
     wasm_abi [eslite_query]
 {
     let node = eslite_query("versions", version_id)
@@ -340,6 +380,7 @@ circuit get_descendants(version_id: VersionId, max_depth: u64) -> DescendantResu
     observe metrics: [descendant_queries, traversal_depth]
     monitor "descendant_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
+    property liveness "traversal_terminates" { eventually(result != null) }
     wasm_abi [eslite_query]
 {
     let node = eslite_query("versions", version_id)
@@ -380,6 +421,8 @@ circuit find_common_ancestor(version_a: VersionId, version_b: VersionId) -> Comm
     lex esn/global/org/polylabs/files
     observe metrics: [common_ancestor_queries, lca_depth, lca_latency_ms]
     monitor "lca_latency" { lca_latency_ms < 500 }
+    invariant "distinct_versions" { version_a != version_b }
+    property safety "common_ancestor_exists" { result.ancestor_id in ancestors(a) && result.ancestor_id in ancestors(b) }
     wasm_abi [eslite_query]
 {
     let ancestors_a = set()
@@ -444,6 +487,7 @@ circuit merge_versions(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     observe metrics: [merges_created, merge_conflicts, merge_strategies]
     monitor "merge_success_rate" { merge_conflicts / merges_created < 0.2 }
     invariant "distinct_branches" { version_a != version_b }
+    property safety "merge_has_two_parents" { result.parent_count == 2 }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
     let node_a = eslite_query("versions", version_a)
@@ -476,6 +520,8 @@ circuit prove_version(version_id: VersionId) -> VersionProof
     lex esn/global/org/polylabs/files
     observe metrics: [proofs_generated, proof_verifications]
     monitor "proof_latency" { proof_time_ms < 50 }
+    invariant "version_exists" { node != null }
+    property safety "proof_verifiable" { result.verified implies merkle_verify(result.proof_path, result.merkle_root) }
     wasm_abi [eslite_query]
 {
     let node = eslite_query("versions", version_id)

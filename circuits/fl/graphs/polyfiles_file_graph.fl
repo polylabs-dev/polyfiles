@@ -16,7 +16,7 @@ import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
-data FileNode : app v1 {
+data FileNode : files v1 {
     file_id: bytes(32),
     owner_id: bytes(16),
     name: string,
@@ -38,7 +38,7 @@ data FileNode : app v1 {
         on_anomaly alert "files-team"
     }
 
-data FolderNode : app v1 {
+data FolderNode : files v1 {
     folder_id: bytes(32),
     owner_id: bytes(16),
     name: string,
@@ -53,22 +53,36 @@ data FolderNode : app v1 {
     cortex {
         obfuscate [owner_id]
         infer on_write
+        on_anomaly alert "files-team"
     }
 
 // ── Edge Types ─────────────────────────────────────────────────────
 
-type ContainsEdge = struct {
+data ContainsEdge : files v1 {
     parent_id: bytes(32),
     child_id: bytes(32),
     child_type: ChildType,
     added_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type OwnedByEdge = struct {
+data OwnedByEdge : files v1 {
     node_id: bytes(32),
     owner_id: bytes(16),
     owner_since_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 type ChildType = enum {
     File,
@@ -81,19 +95,31 @@ type FileId = bytes(32)
 type FolderId = bytes(32)
 type UserId = bytes(16)
 
-type FolderListing = struct {
+data FolderListing : files v1 {
     folder_id: FolderId,
     files: [FileNode],
     folders: [FolderNode],
     total_count: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type MoveResult = struct {
+data MoveResult : files v1 {
     node_id: bytes(32),
     old_parent: FolderId,
     new_parent: FolderId,
     moved_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 // ── Graph Declaration ──────────────────────────────────────────────
 
@@ -129,10 +155,12 @@ graph file_registry {
     overlay shard_count: u16 bitmask delta_curate
 
     storage csr {
-        hot @bram,
-        warm @ddr,
-        cold @nvme,
+        tier bram { capacity: 10_000 }
+        tier ddr { capacity: 1_000_000 }
+        tier nvme { capacity: 100_000_000 }
     }
+
+    sign ml_dsa_87
 
     ai_feed file_anomaly_detection
     ai_feed classification_suggestion
@@ -193,6 +221,7 @@ circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { classification <= 4 }
     invariant "name_non_empty" { len(name) > 0 }
+    property safety "file_id_deterministic" { file_id == sha3_256(owner_id ++ folder_id ++ content_hash ++ ts) }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
     let derived_id = polykit_identity::derive_user_id(owner_pk)
@@ -274,6 +303,7 @@ circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: Folder
     monitor "folder_creation_rate" { folders_created > 0 }
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { classification <= 4 }
+    property safety "folder_inherits_parent_classification" { effective_class >= parent.classification }
     wasm_abi [eslite_insert, eslite_query, now]
 {
     let derived_id = polykit_identity::derive_user_id(owner_pk)
@@ -339,6 +369,7 @@ circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_
     observe metrics: [files_moved]
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "different_parents" { old_parent != new_parent }
+    property safety "no_classification_downgrade" { file.classification <= dst.classification }
     wasm_abi [eslite_insert, eslite_query, eslite_delete, now]
 {
     let derived_id = polykit_identity::derive_user_id(owner_pk)
@@ -401,6 +432,7 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     meters [compute_cycles, storage]
     observe metrics: [files_deleted, storage_bytes_freed]
     invariant "owner_authenticated" { derived_id == owner_id }
+    property safety "delete_requires_ownership" { file.owner_id == owner_id }
     wasm_abi [eslite_query, eslite_delete, eslite_insert, now]
 {
     let derived_id = polykit_identity::derive_user_id(owner_pk)
@@ -450,6 +482,7 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
     monitor "reclassification_anomaly" { classification_downgrades / reclassifications < 0.1 }
     invariant "owner_authenticated" { derived_id == owner_id }
     invariant "classification_valid" { new_classification <= 4 }
+    property safety "reclassification_audited" { audit_trail records reclassification }
     wasm_abi [eslite_query, eslite_insert, now]
 {
     let derived_id = polykit_identity::derive_user_id(owner_pk)
@@ -487,6 +520,7 @@ circuit list_folder(owner_id: UserId, folder_id: FolderId, offset: u32, limit: u
     observe metrics: [folder_listings, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
+    property liveness "listing_eventually_returns" { eventually(result != null) }
     wasm_abi [eslite_query]
 {
     let folder = eslite_query("folders", folder_id)

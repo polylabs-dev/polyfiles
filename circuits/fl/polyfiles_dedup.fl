@@ -1,0 +1,443 @@
+// PolyFiles Dedup — Content-addressable deduplication via BLAKE3 hash
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/dedup
+//   Content-addressable dedup using BLAKE3 hashes. Scatter-aware: dedup
+//   checks run across distributed nodes to find existing copies before
+//   creating new shards. Reduces storage by detecting byte-identical
+//   content across users (without revealing content or ownership).
+
+import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+
+// ── Types ──────────────────────────────────────────────────────────
+
+type FileId = bytes(32)
+type UserId = bytes(16)
+type NodeId = bytes(32)
+
+// ── Stratum Data Declarations ──────────────────────────────────────
+
+data ContentHash : files v1 {
+    hash: bytes(32),
+    algorithm: string,
+    size_bytes: u64,
+    chunk_index: u32,
+    computed_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/dedup
+    cortex {
+        redact [hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data DedupResult : files v1 {
+    content_hash: bytes(32),
+    is_duplicate: bool,
+    existing_file_id: option<FileId>,
+    existing_node_ids: list<NodeId>,
+    savings_bytes: u64,
+    checked_nodes: u32,
+    checked_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/dedup
+    cortex {
+        redact [content_hash, existing_file_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data DedupEntry : files v1 {
+    content_hash: bytes(32),
+    file_id: FileId,
+    owner_id_hash: bytes(32),
+    size_bytes: u64,
+    shard_locations: list<NodeId>,
+    reference_count: u32,
+    first_seen_ms: u64,
+    last_seen_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/dedup
+    cortex {
+        redact [content_hash, owner_id_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data MergeResult : files v1 {
+    content_hash: bytes(32),
+    merged_from_nodes: list<NodeId>,
+    total_references: u32,
+    canonical_file_id: FileId,
+    savings_bytes: u64,
+    merged_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/dedup
+    cortex {
+        redact [content_hash]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data DedupStats : files v1 {
+    total_files: u64,
+    unique_files: u64,
+    duplicate_files: u64,
+    total_bytes: u64,
+    deduped_bytes: u64,
+    savings_ratio: f64,
+    computed_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/dedup
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+// ── Streams ────────────────────────────────────────────────────────
+
+stream dedup_events: event<DedupResult>
+    | throttle 500/s burst 1000
+    | topic "polylabs.files.dedup.{content_hash}"
+    | retention policy_based
+    | hash_chain true
+
+// ── Circuits ───────────────────────────────────────────────────────
+
+circuit compute_content_hash(data: bytes, chunk_index: u32) -> ContentHash
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/dedup
+    precision C
+    observe metrics: [hashes_computed, bytes_hashed]
+    monitor "hash_throughput" { bytes_per_sec > 100_000_000 }
+    invariant "data_not_empty" { len(data) > 0 }
+    property safety "hash_deterministic" { blake3(data) == blake3(data) }
+    meters [compute_cycles, hashes]
+{
+    let hash = blake3(data)
+    let ts = now()
+    ContentHash {
+        hash: hash,
+        algorithm: "blake3",
+        size_bytes: len(data),
+        chunk_index: chunk_index,
+        computed_ms: ts,
+    }
+}
+
+circuit check_dedup(
+    content_hash: bytes(32),
+    size_bytes: u64,
+    scatter_nodes: list<NodeId>,
+) -> DedupResult
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/dedup
+    precision C
+    observe metrics: [dedup_checks, dedup_hits, dedup_misses, savings_bytes_total]
+    monitor "dedup_hit_rate" { dedup_hits / dedup_checks > 0.1 }
+    invariant "hash_non_empty" { content_hash != zeroed(32) }
+    invariant "size_positive" { size_bytes > 0 }
+    property safety "hash_collision_resistant" { !exists(entry where entry.content_hash == content_hash && entry.size_bytes != size_bytes) }
+    property liveness "dedup_eventually_responds" { eventually(result != null) }
+    fuzz_target
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let existing = eslite_query("dedup_index", content_hash)
+
+    if existing != null {
+        let savings = size_bytes
+
+        let updated = { ...existing,
+            reference_count: existing.reference_count + 1,
+            last_seen_ms: ts,
+        }
+        eslite_insert("dedup_index", content_hash, updated)
+
+        let result = DedupResult {
+            content_hash: content_hash,
+            is_duplicate: true,
+            existing_file_id: some(existing.file_id),
+            existing_node_ids: existing.shard_locations,
+            savings_bytes: savings,
+            checked_nodes: len(scatter_nodes),
+            checked_ms: ts,
+        }
+        emit(dedup_events, result)
+        return result
+    }
+
+    let remote_hits = list_new()
+    let checked = 0u32
+    parallel for node_id in scatter_nodes {
+        checked = checked + 1
+        let remote_entry = lattice_query(node_id, "dedup_index", content_hash)
+        if remote_entry != null {
+            list_push(remote_hits, node_id)
+        }
+    }
+
+    if len(remote_hits) > 0 {
+        let result = DedupResult {
+            content_hash: content_hash,
+            is_duplicate: true,
+            existing_file_id: none,
+            existing_node_ids: remote_hits,
+            savings_bytes: size_bytes,
+            checked_nodes: checked,
+            checked_ms: ts,
+        }
+        emit(dedup_events, result)
+        return result
+    }
+
+    DedupResult {
+        content_hash: content_hash,
+        is_duplicate: false,
+        existing_file_id: none,
+        existing_node_ids: [],
+        savings_bytes: 0,
+        checked_nodes: checked,
+        checked_ms: ts,
+    }
+}
+
+circuit register_content(
+    content_hash: bytes(32),
+    file_id: FileId,
+    owner_id: UserId,
+    size_bytes: u64,
+    shard_locations: list<NodeId>,
+) -> DedupEntry
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/dedup
+    precision C
+    observe metrics: [dedup_registrations, unique_content_count]
+    monitor "registration_latency" { registration_time_ms < 10 }
+    invariant "hash_non_empty" { content_hash != zeroed(32) }
+    invariant "has_shards" { len(shard_locations) > 0 }
+    property safety "owner_blinded" { owner_id_hash == blake3(owner_id) }
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now()
+    let owner_hash = blake3(owner_id)
+
+    let entry = DedupEntry {
+        content_hash: content_hash,
+        file_id: file_id,
+        owner_id_hash: owner_hash,
+        size_bytes: size_bytes,
+        shard_locations: shard_locations,
+        reference_count: 1,
+        first_seen_ms: ts,
+        last_seen_ms: ts,
+    }
+
+    eslite_insert("dedup_index", content_hash, entry)
+    entry
+}
+
+circuit merge_dedup(
+    content_hash: bytes(32),
+    remote_entries: list<DedupEntry>,
+) -> MergeResult
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/dedup
+    precision C
+    observe metrics: [dedup_merges, merged_references, merge_savings_bytes]
+    monitor "merge_latency" { merge_time_ms < 50 }
+    invariant "hash_non_empty" { content_hash != zeroed(32) }
+    invariant "has_entries" { len(remote_entries) > 0 }
+    property safety "merge_preserves_all_references" { total_references == sum(remote_entries, |e| e.reference_count) }
+    property liveness "merge_eventually_completes" { eventually(result != null) }
+    fuzz_target
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let total_refs = 0u32
+    let all_nodes = list_new()
+    let canonical_file_id = remote_entries[0].file_id
+    let earliest_seen = remote_entries[0].first_seen_ms
+    let size = remote_entries[0].size_bytes
+
+    for entry in remote_entries {
+        total_refs = total_refs + entry.reference_count
+        for node_id in entry.shard_locations {
+            if !list_contains(all_nodes, node_id) {
+                list_push(all_nodes, node_id)
+            }
+        }
+        if entry.first_seen_ms < earliest_seen {
+            earliest_seen = entry.first_seen_ms
+            canonical_file_id = entry.file_id
+        }
+    }
+
+    let merged_entry = DedupEntry {
+        content_hash: content_hash,
+        file_id: canonical_file_id,
+        owner_id_hash: remote_entries[0].owner_id_hash,
+        size_bytes: size,
+        shard_locations: all_nodes,
+        reference_count: total_refs,
+        first_seen_ms: earliest_seen,
+        last_seen_ms: ts,
+    }
+    eslite_insert("dedup_index", content_hash, merged_entry)
+
+    let savings = size * u64(total_refs - 1)
+
+    MergeResult {
+        content_hash: content_hash,
+        merged_from_nodes: all_nodes,
+        total_references: total_refs,
+        canonical_file_id: canonical_file_id,
+        savings_bytes: savings,
+        merged_ms: ts,
+    }
+}
+
+circuit get_dedup_stats() -> DedupStats
+    profile poly_framework_standard
+    target lattice
+    lex esn/global/org/polylabs/files/dedup
+    precision C
+    observe metrics: [stats_queries]
+    invariant "stats_consistent" { total_files >= unique_files }
+    property safety "savings_ratio_bounded" { savings_ratio >= 0.0 && savings_ratio <= 1.0 }
+    wasm_abi [eslite_query, now]
+{
+    let ts = now()
+    let all_entries = eslite_query("dedup_index_all")
+    let unique = len(all_entries)
+    let total_refs = 0u64
+    let total_bytes = 0u64
+    let deduped_bytes = 0u64
+
+    for entry in all_entries {
+        total_refs = total_refs + u64(entry.reference_count)
+        total_bytes = total_bytes + entry.size_bytes * u64(entry.reference_count)
+        deduped_bytes = deduped_bytes + entry.size_bytes * u64(entry.reference_count - 1)
+    }
+
+    let ratio = if total_bytes > 0 {
+        f64(deduped_bytes) / f64(total_bytes)
+    } else {
+        0.0
+    }
+
+    DedupStats {
+        total_files: total_refs,
+        unique_files: u64(unique),
+        duplicate_files: total_refs - u64(unique),
+        total_bytes: total_bytes,
+        deduped_bytes: deduped_bytes,
+        savings_ratio: ratio,
+        computed_ms: ts,
+    }
+}
+
+// ── Test & Verification Blocks ───────────────────────────────────
+
+test golden "compute_blake3_content_hash" {
+    input {
+        data: bytes("Hello, Poly Files dedup test content!")
+        chunk_index: 0
+    }
+    assert {
+        result.hash != zeroed(32)
+        result.algorithm == "blake3"
+        result.size_bytes == 36
+        result.chunk_index == 0
+    }
+}
+
+test golden "check_dedup_no_duplicate" {
+    input {
+        content_hash: blake3(bytes("unique content"))
+        size_bytes: 1024
+        scatter_nodes: [bytes(32){0x01}, bytes(32){0x02}]
+    }
+    assert {
+        result.is_duplicate == false
+        result.existing_file_id == none
+        result.savings_bytes == 0
+        result.checked_nodes == 2
+    }
+}
+
+test golden "register_and_find_duplicate" {
+    steps {
+        let hash = blake3(bytes("duplicate content"))
+        let file_id = sha3_256(bytes("file-001"))
+        let owner_id = bytes(16){0x01}
+        let nodes = [bytes(32){0x01}, bytes(32){0x02}, bytes(32){0x03}]
+
+        let entry = register_content(hash, file_id, owner_id, 4096, nodes)
+        let check = check_dedup(hash, 4096, [])
+    }
+    assert {
+        entry.reference_count == 1
+        entry.content_hash == hash
+        check.is_duplicate == true
+        check.existing_file_id == some(file_id)
+        check.savings_bytes == 4096
+    }
+}
+
+test golden "merge_dedup_across_nodes" {
+    steps {
+        let hash = blake3(bytes("shared content across nodes"))
+        let entries = [
+            DedupEntry {
+                content_hash: hash,
+                file_id: sha3_256(bytes("file-a")),
+                owner_id_hash: blake3(bytes(16){0x01}),
+                size_bytes: 8192,
+                shard_locations: [bytes(32){0x01}],
+                reference_count: 3,
+                first_seen_ms: 1000,
+                last_seen_ms: 2000,
+            },
+            DedupEntry {
+                content_hash: hash,
+                file_id: sha3_256(bytes("file-b")),
+                owner_id_hash: blake3(bytes(16){0x02}),
+                size_bytes: 8192,
+                shard_locations: [bytes(32){0x02}],
+                reference_count: 2,
+                first_seen_ms: 500,
+                last_seen_ms: 1500,
+            },
+        ]
+
+        let merged = merge_dedup(hash, entries)
+    }
+    assert {
+        merged.total_references == 5
+        merged.content_hash == hash
+        merged.canonical_file_id == sha3_256(bytes("file-b"))
+        merged.savings_bytes == 8192 * 4
+        len(merged.merged_from_nodes) == 2
+    }
+}
+
+kat_vector "blake3_dedup_hash" {
+    function: "blake3"
+    input: bytes("")
+    expected: hex("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}
+
+kat_vector "blake3_content_hash" {
+    function: "blake3"
+    input: bytes("abc")
+    expected: hex("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")
+}

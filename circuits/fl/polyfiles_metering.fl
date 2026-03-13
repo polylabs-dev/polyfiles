@@ -28,44 +28,76 @@ type OperationType = enum {
     GitClone,
 }
 
-type UploadMetrics = struct {
+data UploadMetrics : files v1 {
     file_size: u64,
     chunk_count: u32,
     encryption_cycles: u64,
     erasure_coding_cycles: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type DownloadMetrics = struct {
+data DownloadMetrics : files v1 {
     file_size: u64,
     shard_count: u32,
     reassembly_cycles: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ScatterMetrics = struct {
+data ScatterMetrics : files v1 {
     shard_count: u32,
     total_shard_bytes: u64,
     node_count: u32,
     vrf_hashes: u32,
     fpga_cycles: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type QuotaStatus = struct {
+data QuotaStatus : files v1 {
     user_id: UserId,
     current: polykit_metering::DimensionValues,
     limits: polykit_metering::DimensionValues,
     violations: [polykit_metering::MeteringDimension; 8],
     within_quota: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        redact [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type UsageSummary = struct {
+data UsageSummary : files v1 {
     user_id: UserId,
     period_start_ms: u64,
     period_end_ms: u64,
     totals: polykit_metering::DimensionValues,
     operation_counts: OperationCounts,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        redact [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type OperationCounts = struct {
+data OperationCounts : files v1 {
     uploads: u64,
     downloads: u64,
     scatters: u64,
@@ -74,6 +106,12 @@ type OperationCounts = struct {
     git_pushes: u64,
     git_clones: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 stream metering_events: event<polykit_metering::MeteringRecord>
     | throttle 2000/s burst 5000
@@ -88,10 +126,12 @@ circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_meterin
     lex esn/global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
+    precision C
     meters [compute_cycles]
     observe metrics: [upload_meters, bandwidth_metered, storage_metered]
     monitor "upload_metering_latency" { metering_time_ms < 5 }
     invariant "positive_file_size" { metrics.file_size > 0 }
+    property safety "metering_non_negative" { all_dims >= 0 }
     wasm_abi [eslite_insert, stream_emit, now]
 {
     let bandwidth = metrics.file_size
@@ -123,9 +163,12 @@ circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_met
     lex esn/global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
+    precision C
     meters [compute_cycles]
     observe metrics: [download_meters, bandwidth_metered]
     monitor "download_metering_latency" { metering_time_ms < 5 }
+    invariant "positive_file_size" { metrics.file_size > 0 }
+    property safety "bandwidth_accounts_for_overhead" { dims.bandwidth >= metrics.file_size }
     wasm_abi [eslite_insert, stream_emit, now]
 {
     let bandwidth = metrics.file_size + u64(metrics.shard_count) * 64
@@ -154,10 +197,12 @@ circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_meter
     lex esn/global/org/polylabs/files/metering {
         sub_lex user fan_in
     }
+    precision C
     meters [compute_cycles]
     observe metrics: [scatter_meters, fpga_cycles_metered, storage_metered]
     monitor "scatter_metering_latency" { metering_time_ms < 5 }
     invariant "shard_count_positive" { metrics.shard_count > 0 }
+    property safety "scatter_storage_tracked" { dims.storage == metrics.total_shard_bytes }
     wasm_abi [eslite_insert, stream_emit, now]
 {
     let storage = metrics.total_shard_bytes
@@ -186,9 +231,11 @@ circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> Quot
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/metering
+    precision C
     observe metrics: [quota_checks, quota_violations, quota_ok]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.05 }
     invariant "tier_limits_positive" { all_dims_positive(tier.limits) }
+    property safety "quota_enforced" { violations implies !within_quota }
     wasm_abi [eslite_query]
 {
     let current = polykit_metering::get_usage_summary(user_id)
@@ -213,8 +260,11 @@ circuit get_usage(user_id: UserId, period_start_ms: u64, period_end_ms: u64) -> 
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/metering
+    precision C
     observe metrics: [usage_queries, usage_query_latency_ms]
     monitor "usage_query_latency" { usage_query_latency_ms < 100 }
+    invariant "valid_period" { period_start_ms < period_end_ms }
+    property liveness "usage_eventually_returned" { eventually(result != null) }
     wasm_abi [eslite_query]
 {
     let totals = polykit_metering::get_usage_summary(user_id)

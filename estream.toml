@@ -1,0 +1,47 @@
+[platform]
+version = "0.11.0"
+min_version = "0.11.0"
+
+[project]
+name = "polyfiles"
+description = "Scatter-distributed encrypted file storage with PQ cryptography and zero-linkage privacy"
+organization = "polylabs-dev"
+repository = "https://github.com/polylabs-dev/polyfiles"
+
+[build]
+circuits = "circuits/fl/**/*.fl"
+output = ".es/build"
+target = ["wasm", "lattice"]
+
+[build.escir]
+api_version = "0.11.0"
+emit_ir = true
+optimization_level = 2
+
+[build.codegen]
+rust = true
+wasm = true
+typescript_types = true
+
+[dependencies]
+polykit = { version = ">=0.3.0", path = "../polykit" }
+
+[lex]
+root = "esn/global/org/polylabs/files"
+
+[cortex]
+default_alert_team = "files-team"
+infer_on_write = true
+anomaly_detection = true
+
+[telemetry]
+schema_hash = "auto"
+streamsight = true
+blind_relay = true
+cohort_min_size = 50
+
+[testing]
+test_vectors = "test_vectors/"
+fuzz_targets = true
+kat_vectors = true
+golden_tests = true

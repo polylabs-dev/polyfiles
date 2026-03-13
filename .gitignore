@@ -6,3 +6,4 @@ target/
 *.wasm.sig
 .env
 *.sk.pem
+.es/

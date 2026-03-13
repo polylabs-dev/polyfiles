@@ -18,12 +18,12 @@ type ManifestHash = bytes(32)
 type UserId = bytes(16)
 
 type ScatterPolicy = enum {
-    Standard,     // k=3, n=5
-    Redundant,    // k=5, n=9
-    Paranoid,     // k=7, n=13
+    Standard,
+    Redundant,
+    Paranoid,
 }
 
-type Manifest = struct {
+data Manifest : files v1 {
     file_id: FileId,
     owner_id: UserId,
     file_size: u64,
@@ -36,8 +36,15 @@ type Manifest = struct {
     signing_pk: bytes(2592),
     timestamp_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/router
+    cortex {
+        redact [signature, signing_pk, encryption_nonce, owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type Shard = struct {
+data Shard : files v1 {
     shard_id: ShardId,
     file_id: FileId,
     shard_index: u32,
@@ -46,16 +53,30 @@ type Shard = struct {
     erasure_index: u32,
     content_hash: bytes(32),
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/router
+    cortex {
+        redact [content_hash, node_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ScatterResult = struct {
+data ScatterResult : files v1 {
     file_id: FileId,
     shards_placed: u32,
     shards_required: u32,
     placement_proof: bytes(32),
     vrf_seed: bytes(32),
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/router
+    cortex {
+        redact [vrf_seed, placement_proof]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type DownloadToken = struct {
+data DownloadToken : files v1 {
     file_id: FileId,
     requester_id: UserId,
     shard_locations: [ShardId; 16],
@@ -63,17 +84,37 @@ type DownloadToken = struct {
     expiry_ms: u64,
     token_signature: bytes(4627),
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/router
+    cortex {
+        redact [token_signature, requester_id, shard_locations]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type IndexEntry = struct {
+data IndexEntry : files v1 {
     file_id: FileId,
     manifest_hash: ManifestHash,
     file_size: u64,
     version: u64,
     updated_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files/router
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 state_machine file_lifecycle {
     initial uploading
+    persistence wal
+    terminal [failed, purged]
+    ai_anomaly_detection true
+    audit_trail true
+    witness_attest true
+    recovery retry
+    timeout 600_000
 
     state uploading {
         on chunks_encrypted -> scattering
@@ -129,10 +170,12 @@ circuit validate_manifest(manifest: Manifest) -> bool
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router
+    precision C
     observe metrics: [manifest_validations, signature_checks, policy_violations]
     monitor "validation_latency" { validation_time_ms < 20 }
     invariant "manifest_signed" { len(manifest.signature) == 4627 }
     invariant "valid_scatter_k" { scatter_k(manifest.scatter_policy) <= scatter_n(manifest.scatter_policy) }
+    property safety "valid_signature_required" { result == true implies sig_valid == true }
 {
     let sig_valid = polykit_identity::verify_signature(
         manifest.signing_pk,
@@ -153,16 +196,21 @@ circuit validate_manifest(manifest: Manifest) -> bool
 }
 
 // --- Distribute shards via VRF to storage nodes ---
+@guard(block_on: insufficient_scatter_nodes)
 circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32)]) -> ScatterResult
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router {
         sub_lex session fan_in
     }
+    precision C
     meters [compute_cycles, bandwidth]
     observe metrics: [shards_scattered, scatter_latency_ms, node_selections]
     monitor "scatter_success_rate" { scatter_failures / scatter_attempts < 0.05 }
     invariant "minimum_placement" { shards_placed >= scatter_k(manifest.scatter_policy) }
+    property safety "all_shards_placed_on_distinct_nodes" { unique(placements.node_id) }
+    property liveness "scatter_eventually_completes" { eventually(shards_placed >= k) }
+    fuzz_target
     wasm_abi [eslite_insert, stream_emit, vrf_prove, now]
 {
     let (k, n) = match manifest.scatter_policy {
@@ -205,8 +253,11 @@ circuit store_manifest(manifest: Manifest) -> ManifestHash
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router
+    precision C
     observe metrics: [manifests_stored, storage_latency_ms]
     monitor "store_throughput" { manifests_stored > 0 }
+    invariant "manifest_has_file_id" { manifest.file_id != zeroed(32) }
+    property safety "manifest_hash_deterministic" { hash(m) == hash(m) }
     wasm_abi [eslite_insert, stream_emit, now]
 {
     let manifest_hash = sha3_256(
@@ -233,10 +284,12 @@ circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: byte
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router
+    precision C
     meters [compute_cycles, bandwidth]
     observe metrics: [downloads_routed, download_latency_ms, auth_failures]
     monitor "download_auth_rate" { auth_failures / downloads_routed < 0.1 }
     invariant "requester_authenticated" { sig_valid == true }
+    property safety "access_control_enforced" { !is_owner && !has_share implies error("access_denied") }
     wasm_abi [eslite_query, now]
 {
     let derived_id = polykit_identity::derive_user_id(requester_pk)
@@ -276,7 +329,10 @@ circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size:
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router
+    precision C
     observe metrics: [index_updates]
+    invariant "version_positive" { new_version > 0 }
+    property safety "index_monotonic_version" { new_version >= old_version }
     wasm_abi [eslite_insert, eslite_query, now]
 {
     let ts = now()
@@ -296,9 +352,12 @@ circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), ow
     profile poly_framework_standard
     target lattice
     lex esn/global/org/polylabs/files/router
+    precision C
     meters [compute_cycles]
     observe metrics: [files_purged, purge_latency_ms, shard_deletions]
     monitor "purge_completeness" { orphan_shards == 0 }
+    invariant "owner_authenticated" { derived == owner_id }
+    property safety "purge_requires_ownership" { derived == owner_id && sig_valid }
     wasm_abi [eslite_delete, eslite_query, now]
 {
     let derived = polykit_identity::derive_user_id(owner_pk)

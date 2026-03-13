@@ -30,7 +30,7 @@ type Classification = enum {
     Sovereign,
 }
 
-type FileNode = struct {
+data FileNode : files v1 {
     file_id: FileId,
     filename: string,
     mime_type: string,
@@ -45,8 +45,16 @@ type FileNode = struct {
     scatter_health: f32,
     offline_cached: bool,
 }
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        redact [filename]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type FolderNode = struct {
+data FolderNode : files v1 {
     folder_id: FolderId,
     name: string,
     parent_id: option<FolderId>,
@@ -56,22 +64,42 @@ type FolderNode = struct {
     file_count: u64,
     subfolder_count: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ContainsEdge = struct {
+data ContainsEdge : files v1 {
     parent: FolderId,
     child_file: option<FileId>,
     child_folder: option<FolderId>,
     added_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type OwnedByEdge = struct {
+data OwnedByEdge : files v1 {
     resource_id: bytes(32),
     owner_id: UserId,
     granted_at: u64,
     permission_level: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type AnomalyEvent = struct {
+data AnomalyEvent : files v1 {
     event_type: string,
     user_id: UserId,
     count: u64,
@@ -80,6 +108,13 @@ type AnomalyEvent = struct {
     timestamp: u64,
     severity: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 graph file_registry
     lex esn/global/org/polylabs/files
@@ -126,6 +161,17 @@ graph file_registry
         type: u32
         observe metrics: [total_shard_count, avg_shards_per_file]
     }
+
+    storage csr {
+        tier bram { capacity: 10_000 }
+        tier ddr { capacity: 1_000_000 }
+        tier nvme { capacity: 100_000_000 }
+    }
+
+    sign ml_dsa_87
+
+    ai_feed file_anomaly_detection
+    ai_feed classification_suggestion
 }
 
 // --- Insert a new file into the registry ---
@@ -136,10 +182,12 @@ circuit register_file(
 ) -> FileNode
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [files_registered, registration_latency]
     monitor "registration_rate" { files_registered_per_min < 1000 }
     invariant "file_id_unique" { !graph_contains(file_registry, FileNode, file.file_id) }
     invariant "folder_exists" { graph_contains(file_registry, FolderNode, folder_id) }
+    property safety "file_registered_with_owner" { owned_by_edge.owner_id == owner_id }
     meters [compute_cycles, storage, executions]
 {
     graph_insert(file_registry, file)
@@ -174,8 +222,10 @@ circuit register_folder(
 ) -> FolderNode
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [folders_registered]
     invariant "folder_id_unique" { !graph_contains(file_registry, FolderNode, folder.folder_id) }
+    property safety "folder_registered" { graph_contains(file_registry, FolderNode, folder.folder_id) }
     meters [compute_cycles, storage]
 {
     graph_insert(file_registry, folder)
@@ -195,9 +245,11 @@ circuit register_folder(
 circuit update_scatter_health(file_id: FileId, available_shards: u32, total_shards: u32) -> f32
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [scatter_health_updates, degraded_files]
     monitor "shard_degradation" { health < 0.8 }
     invariant "shards_valid" { available_shards <= total_shards }
+    property safety "health_bounded" { result >= 0.0 && result <= 1.0 }
     meters [compute_cycles]
 {
     let health = f32(available_shards) / f32(total_shards)
@@ -212,8 +264,10 @@ circuit update_scatter_health(file_id: FileId, available_shards: u32, total_shar
 circuit unregister_file(file_id: FileId, user_id: UserId) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [files_unregistered, deletion_latency]
     invariant "file_exists" { graph_contains(file_registry, FileNode, file_id) }
+    property safety "file_removed_completely" { !graph_contains(file_registry, FileNode, file_id) }
     meters [compute_cycles, executions]
 {
     graph_remove(file_registry, FileNode, file_id)
@@ -230,7 +284,10 @@ circuit query_by_classification(
 ) -> list<FileNode>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [graph_queries, query_result_count]
+    invariant "valid_classification" { classification in Classification }
+    property liveness "query_returns" { eventually(result != null) }
     meters [compute_cycles]
 {
     let candidates = overlay_query(file_registry, "classification", classification)
@@ -245,7 +302,9 @@ circuit query_by_classification(
 circuit check_creation_anomaly(user_id: UserId) -> option<AnomalyEvent>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [creation_anomalies_detected]
+    property safety "anomaly_has_evidence" { result.is_some() implies result.unwrap().count > threshold }
 {
     let window_ms: u64 = 60_000
     let threshold: u64 = 100
@@ -271,7 +330,9 @@ circuit check_creation_anomaly(user_id: UserId) -> option<AnomalyEvent>
 circuit check_deletion_anomaly(user_id: UserId) -> option<AnomalyEvent>
     profile poly_framework_standard
     lex esn/global/org/polylabs/files
+    precision C
     observe metrics: [deletion_anomalies_detected]
+    property safety "deletion_anomaly_flagged" { result.is_some() implies result.unwrap().count > threshold }
 {
     let window_ms: u64 = 60_000
     let threshold: u64 = 50

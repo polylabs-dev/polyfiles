@@ -15,7 +15,7 @@ import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
-data ShareUserNode : app v1 {
+data ShareUserNode : files v1 {
     user_id: bytes(16),
     email: string,
     display_name_hash: bytes(32),
@@ -33,7 +33,7 @@ data ShareUserNode : app v1 {
         on_anomaly alert "files-team"
     }
 
-data SharedFileNode : app v1 {
+data SharedFileNode : files v1 {
     file_id: bytes(32),
     owner_id: bytes(16),
     file_size: u64,
@@ -47,9 +47,10 @@ data SharedFileNode : app v1 {
     cortex {
         obfuscate [owner_id]
         infer on_write
+        on_anomaly alert "files-team"
     }
 
-data EphemeralLinkNode : app v1 {
+data EphemeralLinkNode : files v1 {
     link_id: bytes(32),
     file_id: bytes(32),
     creator_id: bytes(16),
@@ -88,12 +89,19 @@ type ShareState = enum {
     Expired,
 }
 
-type OwnsEdge = struct {
+data OwnsEdge : files v1 {
     user_id: UserId,
     file_id: FileId,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ShareEdge = struct {
+data ShareEdge : files v1 {
     share_id: ShareId,
     from_user: UserId,
     to_user: UserId,
@@ -103,21 +111,42 @@ type ShareEdge = struct {
     granted_ms: u64,
     expires_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [from_user, to_user]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type EphemeralEdge = struct {
+data EphemeralEdge : files v1 {
     link_id: LinkId,
     file_id: FileId,
     creator_id: UserId,
     state: ShareState,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [creator_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type ShareListResult = struct {
+data ShareListResult : files v1 {
     user_id: UserId,
     shared_files: [SharedFileEntry],
     total_count: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
-type SharedFileEntry = struct {
+data SharedFileEntry : files v1 {
     file_id: FileId,
     share_id: ShareId,
     owner_id: UserId,
@@ -125,11 +154,24 @@ type SharedFileEntry = struct {
     state: ShareState,
     granted_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/files
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
 
 // ── State Machine ──────────────────────────────────────────────────
 
 state_machine share_lifecycle {
     initial Pending
+    persistence wal
+    terminal [Revoked, Expired]
+    ai_anomaly_detection true
+    audit_trail true
+    witness_attest true
+    recovery retry
 
     state Pending {
         on grant_accepted -> Active
@@ -188,10 +230,12 @@ graph share_network {
     overlay ephemeral_active: u32 bitmask delta_curate
 
     storage csr {
-        hot @bram,
-        warm @ddr,
-        cold @nvme,
+        tier bram { capacity: 10_000 }
+        tier ddr { capacity: 1_000_000 }
+        tier nvme { capacity: 100_000_000 }
     }
+
+    sign ml_dsa_87
 
     index shares_by_recipient { key to_user, order granted_ms desc }
     index shares_by_file { key file_id, order granted_ms desc }
@@ -256,6 +300,7 @@ circuit add_share_user(user_id: UserId, public_key: bytes(2592)) -> ShareUserNod
     observe metrics: [share_users_added, graph_node_count]
     monitor "user_node_creation" { share_users_added > 0 }
     invariant "user_identity_valid" { derived_id == user_id }
+    property safety "user_node_unique" { !exists(share_users, user_id) || result == existing }
     wasm_abi [eslite_insert, eslite_query, now]
 {
     let derived_id = polykit_identity::derive_user_id(public_key)
@@ -296,6 +341,7 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
     invariant "from_authenticated" { from_derived == from_user }
     invariant "no_self_share" { from_user != to_user }
     invariant "file_owned" { file_owner == from_user }
+    property safety "share_creates_pending_edge" { result.state == ShareState::Pending }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
     let from_derived = polykit_identity::derive_user_id(from_pk)
@@ -361,6 +407,7 @@ circuit create_ephemeral(file_id: FileId, creator_id: UserId, creator_sk: bytes(
     monitor "ephemeral_creation_rate" { ephemeral_links_created < 500 per 3_600_000 }
     invariant "max_downloads_bounded" { max_downloads <= 10000 }
     invariant "ttl_bounded" { ttl_ms <= 2_592_000_000 }
+    property safety "ephemeral_starts_active" { result.state == ShareState::Active }
     wasm_abi [eslite_insert, eslite_query, now]
 {
     let file_node = eslite_query("shared_files", file_id)
@@ -413,6 +460,7 @@ circuit revoke_share(share_id: ShareId, revoker_id: UserId, revoker_pk: bytes(25
     observe metrics: [shares_revoked, revoke_latency_ms]
     monitor "revoke_success" { shares_revoked > 0 }
     invariant "revoker_authenticated" { revoker_derived == revoker_id }
+    property safety "revoke_is_terminal" { result.state == ShareState::Revoked }
     wasm_abi [eslite_query, eslite_insert, now]
 {
     let revoker_derived = polykit_identity::derive_user_id(revoker_pk)
@@ -453,6 +501,7 @@ circuit list_shared(user_id: UserId, offset: u32, limit: u32) -> ShareListResult
     observe metrics: [share_list_queries, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
+    property liveness "list_eventually_returns" { eventually(result != null) }
     wasm_abi [eslite_query]
 {
     let edges = eslite_query("shares_by_recipient", user_id, offset, limit)
