@@ -1,0 +1,342 @@
+// Poly Files Document Edit — Native document preview and editing within Poly Files
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/files/document
+//   Composes polykit_studio_document to open scatter-stored files (PDF, DOCX, PPTX,
+//   XLSX) directly in-place. Edits are saved back through the scatter-CAS pipeline
+//   with classification-aware erasure coding. Preview generates a lightweight render
+//   without loading the full editor surface.
+//
+// Flow:
+//   preview_file_as_document → classify → render read-only preview → return preview
+//   edit_file_as_document    → classify → open editor session → return session
+//   save_document_to_scatter → encrypt → chunk → scatter-CAS put → update manifest
+
+import polykit_studio_document
+import polyfiles_classify
+import polyfiles_metering
+
+// ── Types ───────────────────────────────────────────────────────
+
+type DocumentFormat = enum {
+    Pdf,
+    Docx,
+    Pptx,
+    Xlsx,
+    Markdown,
+    PlainText,
+}
+
+type EditMode = enum {
+    ReadOnly,
+    Collaborative,
+    Exclusive,
+}
+
+// ── Data ────────────────────────────────────────────────────────
+
+data FileDocumentSession : files v1 {
+    session_id: bytes(16),
+    file_id: bytes(16),
+    user_id: bytes(16),
+    format: DocumentFormat,
+    mode: EditMode,
+    content_hash: bytes(32),
+    classification: Classification,
+    scatter_policy: ScatterPolicy,
+    opened_at: u64,
+    last_saved_at: u64,
+    dirty: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/document
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data FileDocumentPreview : files v1 {
+    file_id: bytes(16),
+    format: DocumentFormat,
+    page_count: u32,
+    thumbnail_hash: bytes(32),
+    text_extract_hash: bytes(32),
+    classification: Classification,
+    rendered_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/document
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+data DocumentSaveResult : files v1 {
+    file_id: bytes(16),
+    content_hash: bytes(32),
+    scatter_refs: list<bytes(32)>,
+    version: u64,
+    saved_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/files/document
+    cortex {
+        infer on_write
+        on_anomaly alert "files-team"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream document_edit_events: event<FileDocumentSession>
+    | throttle 500/s burst 1000
+
+stream document_save_events: event<DocumentSaveResult>
+    | throttle 200/s burst 500
+
+// ── Circuits ────────────────────────────────────────────────────
+
+@guard(block_on: classification_mismatch)
+circuit preview_file_as_document(
+    file_id: bytes(16),
+    user_id: bytes(16),
+    encrypted_content: bytes,
+    decryption_key: bytes(32),
+    format: DocumentFormat,
+) -> FileDocumentPreview
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/document
+    precision C
+    observe metrics: [previews_rendered, preview_latency_ms, preview_pages]
+    monitor "preview_latency" { preview_latency_ms < 500 }
+    invariant "content_nonempty" { len(encrypted_content) > 0 }
+    property safety "preview_retains_classification" {
+        result.classification == classify_file(file_id).classification
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now, aes_gcm_decrypt]
+{
+    let ts = now()
+    let content = aes_gcm_decrypt(decryption_key, encrypted_content)
+    let classify_result = polyfiles_classify::classify_file(file_id, none, none, none, 0.0)
+    let render = polykit_studio_document::render_preview(content, format)
+
+    let preview = FileDocumentPreview {
+        file_id: file_id,
+        format: format,
+        page_count: render.page_count,
+        thumbnail_hash: sha3_256(render.thumbnail),
+        text_extract_hash: sha3_256(render.text_extract),
+        classification: classify_result.classification,
+        rendered_at: ts,
+    }
+
+    polyfiles_metering::record_usage(user_id, "files_document_preview", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: len(content),
+        storage: 0, observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    preview
+}
+
+@guard(block_on: classification_mismatch)
+circuit edit_file_as_document(
+    file_id: bytes(16),
+    user_id: bytes(16),
+    encrypted_content: bytes,
+    decryption_key: bytes(32),
+    format: DocumentFormat,
+    mode: EditMode,
+) -> FileDocumentSession
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/files/document
+    precision C
+    observe metrics: [edit_sessions_opened, edit_mode_distribution, session_latency_ms]
+    monitor "edit_session_latency" { session_latency_ms < 300 }
+    invariant "content_nonempty" { len(encrypted_content) > 0 }
+    invariant "user_authenticated" { user_id != zero_bytes(16) }
+    property safety "session_classification_enforced" {
+        result.classification == classify_file(file_id).classification
+    }
+    property liveness "session_eventually_stored" {
+        eventually(eslite_exists("document_sessions", result.session_id))
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, aes_gcm_decrypt, csprng]
+{
+    let ts = now()
+    let content = aes_gcm_decrypt(decryption_key, encrypted_content)
+    let content_hash = sha3_256(content)
+    let classify_result = polyfiles_classify::classify_file(file_id, none, none, none, 0.0)
+    let session_seed = concat(file_id, user_id, csprng(16), encode_u64(ts))
+    let session_id = bit_slice(sha3_256(session_seed), 0, 128)
+
+    polykit_studio_document::open_editor(content, format, mode)
+
+    let session = FileDocumentSession {
+        session_id: session_id,
+        file_id: file_id,
+        user_id: user_id,
+        format: format,
+        mode: mode,
+        content_hash: content_hash,
+        classification: classify_result.classification,
+        scatter_policy: classify_result.scatter_policy,
+        opened_at: ts,
+        last_saved_at: 0,
+        dirty: false,
+    }
+
+    eslite_insert("document_sessions", session_id, session)
+    emit(document_edit_events, session)
+    session
+}
+
+circuit save_document_to_scatter(
+    session_id: bytes(16),
+    user_id: bytes(16),
+    edited_content: bytes,
+    encryption_key: bytes(32),
+    signing_sk: bytes(4896),
+) -> DocumentSaveResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/files/document
+    precision C
+    constant_time false
+    observe metrics: [documents_saved, save_latency_ms, scatter_chunks_written]
+    monitor "save_latency" { save_latency_ms < 2000 }
+    invariant "content_nonempty" { len(edited_content) > 0 }
+    invariant "session_exists" { eslite_exists("document_sessions", session_id) }
+    property safety "saved_hash_matches_content" {
+        result.content_hash == sha3_256(edited_content)
+    }
+    property liveness "scatter_refs_nonempty" {
+        len(result.scatter_refs) > 0
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_update, now, aes_gcm_encrypt, csprng, scatter_cas_put]
+{
+    let ts = now()
+    let session = eslite_query("document_sessions", session_id)
+    let content_hash = sha3_256(edited_content)
+    let nonce = csprng(12)
+    let (encrypted, _tag) = aes_gcm_encrypt(encryption_key, nonce, edited_content, session.file_id)
+
+    let chunks = polykit_studio_document::chunk_document(encrypted, session.scatter_policy.k, session.scatter_policy.n)
+    let scatter_refs = parallel for chunk in chunks {
+        let ref_hash = scatter_cas_put(chunk, session.scatter_policy)
+        ref_hash
+    }
+
+    let sig_payload = concat(session.file_id, content_hash, encode_u64(ts))
+    let _sig = mldsa_sign(signing_sk, sha3_256(sig_payload))
+
+    eslite_update("document_sessions", session_id, {
+        content_hash: content_hash,
+        last_saved_at: ts,
+        dirty: false,
+    })
+
+    let save_result = DocumentSaveResult {
+        file_id: session.file_id,
+        content_hash: content_hash,
+        scatter_refs: scatter_refs,
+        version: ts,
+        saved_at: ts,
+    }
+
+    emit(document_save_events, save_result)
+
+    polyfiles_metering::record_usage(user_id, "files_document_save", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: len(encrypted),
+        storage: len(encrypted), observables: 2, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    save_result
+}
+
+// ── Test & Verification ─────────────────────────────────────────
+
+test golden "preview_pdf_document" {
+    input {
+        file_id: bytes(16, 0xAA)
+        user_id: bytes(16, 0xBB)
+        encrypted_content: bytes(1024, 0xCC)
+        decryption_key: bytes(32, 0xDD)
+        format: DocumentFormat::Pdf
+    }
+    assert {
+        result.file_id == bytes(16, 0xAA)
+        result.format == DocumentFormat::Pdf
+        result.page_count > 0
+        result.thumbnail_hash != zero_bytes(32)
+        result.rendered_at > 0
+    }
+}
+
+test golden "edit_docx_session" {
+    input {
+        file_id: bytes(16, 0xAA)
+        user_id: bytes(16, 0xBB)
+        encrypted_content: bytes(2048, 0xCC)
+        decryption_key: bytes(32, 0xDD)
+        format: DocumentFormat::Docx
+        mode: EditMode::Exclusive
+    }
+    assert {
+        result.session_id != zero_bytes(16)
+        result.file_id == bytes(16, 0xAA)
+        result.format == DocumentFormat::Docx
+        result.mode == EditMode::Exclusive
+        result.dirty == false
+        result.opened_at > 0
+    }
+}
+
+test golden "save_document_roundtrip" {
+    setup {
+        eslite_insert("document_sessions", bytes(16, 0xEE), FileDocumentSession {
+            session_id: bytes(16, 0xEE),
+            file_id: bytes(16, 0xAA),
+            user_id: bytes(16, 0xBB),
+            format: DocumentFormat::Docx,
+            mode: EditMode::Exclusive,
+            content_hash: sha3_256(bytes(2048, 0xCC)),
+            classification: Classification::Internal,
+            scatter_policy: ScatterPolicy { k: 3, n: 5, jurisdictions: 2, min_providers: 2, geo_diversity: false },
+            opened_at: 1000,
+            last_saved_at: 0,
+            dirty: true,
+        })
+    }
+    input {
+        session_id: bytes(16, 0xEE)
+        user_id: bytes(16, 0xBB)
+        edited_content: bytes(2048, 0xFF)
+        encryption_key: bytes(32, 0xDD)
+        signing_sk: bytes(4896, 0x11)
+    }
+    assert {
+        result.file_id == bytes(16, 0xAA)
+        result.content_hash == sha3_256(bytes(2048, 0xFF))
+        len(result.scatter_refs) > 0
+        result.saved_at > 0
+    }
+}
+
+kat_vector "sha3_256_document_content" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+fuzz_target "save_document_fuzz" {
+    inputs {
+        edited_content: bytes(1..65536)
+        encryption_key: bytes(32)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+    }
+}

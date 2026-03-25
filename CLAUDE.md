@@ -1,6 +1,6 @@
 # Poly Files
 
-Scatter-distributed encrypted storage built on eStream v0.9.1.
+Scatter-distributed encrypted storage built on eStream v0.22.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
@@ -21,7 +21,7 @@ Client (Tauri/Mobile)
 eStream Wire Protocol (QUIC/UDP)
     |
     v
-ESCIR Storage Router Circuit
+FLIR Storage Router Circuit
     |
     +-- Classification Engine (tag assignment, policy enforcement)
     +-- Scatter Store (erasure coding, multi-provider distribution)
@@ -36,10 +36,11 @@ Scatter Storage (k-of-n across providers/jurisdictions)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Storage Router | circuits/ | ESCIR circuit for file routing, classification, scatter |
-| Core SDK | crates/poly-files-core/ | Rust core for encrypt/decrypt, chunking, classification |
+| Storage Router | circuits/ | FLIR circuit for file routing, classification, scatter |
 | Desktop App | apps/desktop/ | Tauri-based file manager |
 | Mobile App | apps/mobile/ | React Native with Rust FFI |
+
+> **Note**: `crates/` is legacy scaffolding superseded by FLIR codegen. All logic lives in FastLang circuits.
 
 ## Classification Tiers
 
@@ -57,26 +58,12 @@ All communication uses the eStream Wire Protocol. No REST/HTTP endpoints.
 
 ## Platform
 
-- eStream v0.9.1
-- ESCIR SmartCircuits
+- eStream v0.22.0
+- FLIR SmartCircuits (FastLang → FLIR → Rust/WASM)
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering
 - L2 multi-token payments
 
-## Developer Language Story (v0.9.1)
+## Commit Convention
 
-eStream supports **7 languages** at full parity: Rust (native), Python (PyO3), TypeScript (WASM), Go (CGo), C++ (FFI), Swift (C bridging), and FastLang (native).
-
-### External Messaging
-
-- Lead with **"7 supported languages"** — developers choose the language they already know
-- Position FastLang as **"the shortest path to silicon"** — the easiest way to design for eStream hardware
-- **ESCIR (eStream Circuit Intermediate Representation) is strictly internal** — never mention it in external-facing materials, docs, pitches, or marketing. It is an implementation detail of the compiler
-- Swift (not Solidity) is the 7th language
-
-### Internal Development
-
-- **FastLang first**: all new circuits and features are authored in FastLang (.fl) first
-- **Six-language parity**: every FastLang feature must have equivalent API surface in Rust, Python, TypeScript, Go, C++, and Swift. Do not ship a FastLang-only feature
-- Implementation types: FastLang (.fl), Hybrid (FastLang + Rust/RTL), Pure Rust, Pure RTL, Platform (tooling)
-- ESCIR operations power the compiler pipeline but are invisible to users
+Commit to the GitHub issue or epic the work was done under.

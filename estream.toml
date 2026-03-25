@@ -1,6 +1,6 @@
 [platform]
-version = "0.12.0"
-min_version = "0.12.0"
+version = "0.22.0"
+min_version = "0.22.0"
 
 [project]
 name = "polyfiles"
@@ -13,8 +13,8 @@ circuits = "circuits/fl/**/*.fl"
 output = ".es/build"
 target = ["wasm", "lattice"]
 
-[build.escir]
-api_version = "0.12.0"
+[build.flir]
+api_version = "0.22.0"
 emit_ir = true
 optimization_level = 2
 
