@@ -89,7 +89,7 @@ circuit files_platform_health(
     property liveness "eventually_healthy" { eventually(all_healthy == true) }
     monitor "file_ops_baseline" { deviation(file_operations, baseline) < 0.15 }
     @serialize "verify/files_health.esz"
-    li_feed full_escir true, optimized_ir true, optimization_metadata true
+    li_feed full_flir true, optimized_ir true, optimization_metadata true
     fuzz_target
     test golden "healthy_platform" {
         let spark = bytes(32, 0xAA)

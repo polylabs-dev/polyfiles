@@ -1,7 +1,7 @@
 /**
  * ESN-AI Recommendations Widget
  *
- * Displays proactive ESCIR optimization recommendations from ESN-AI.
+ * Displays proactive FLIR optimization recommendations from ESN-AI.
  * Recommendations include circuit optimization, capacity planning,
  * anomaly correlation, and security insights.
  *

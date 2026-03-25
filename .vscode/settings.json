@@ -1,11 +1,11 @@
 {
   "yaml.schemas": {
-    ".vscode/schemas/escir.schema.json": "circuits/*/circuit.escir.yaml"
+    ".vscode/schemas/flir.schema.json": "circuits/*/circuit.flir.yaml"
   },
   "json.schemas": [
     {
-      "fileMatch": ["circuits/*/circuit.escir.yaml"],
-      "url": "./.vscode/schemas/escir.schema.json"
+      "fileMatch": ["circuits/*/circuit.flir.yaml"],
+      "url": "./.vscode/schemas/flir.schema.json"
     }
   ],
   "typescript.tsdk": "node_modules/typescript/lib"

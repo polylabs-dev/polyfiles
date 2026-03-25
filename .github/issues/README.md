@@ -8,7 +8,7 @@
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
-| 001 | Scaffold ESCIR client circuits (`poly-data-encrypt`, `poly-data-chunk`, `poly-data-classify`, `poly-data-manifest`) | Open | P0 |
+| 001 | Scaffold FLIR client circuits (`poly-data-encrypt`, `poly-data-chunk`, `poly-data-classify`, `poly-data-manifest`) | Open | P0 |
 | 002 | SPARK identity integration (`poly-data-v1` HKDF context, wire auth 0x50-0x54) | Open | P0 |
 | 003 | Key hierarchy: SPARK → ML-DSA-87 signing + ML-KEM-1024 encryption → per-file AES-256-GCM | Open | P0 |
 | 004 | `.escd` WASM packaging (ML-DSA-87 signed, ≤128 KB/circuit, ≤512 KB bundle) | Open | P0 |
@@ -48,7 +48,7 @@
 | 031 | SOVEREIGN classification with HSM (Poly Vault) | Open | P2 |
 | 032 | Migration tools (Google Drive, Dropbox, OneDrive) | Open | P1 |
 | 033 | Enterprise SLA with StreamSight tracking | Open | P1 |
-| 034 | ESN-AI proactive ESCIR optimization recommendations | Open | P1 |
+| 034 | ESN-AI proactive FLIR optimization recommendations | Open | P1 |
 | 035 | ESN-AI capacity planning and anomaly correlation | Open | P1 |
 | 036 | ESLM-powered semantic search | Open | P2 |
 
@@ -67,6 +67,6 @@
 
 | Issue | Repo | Description | Status |
 |-------|------|-------------|--------|
-| [#550](https://github.com/polyquantum/estream-io/issues/550) | estream-io | ESCIR → WASM Client Build (`.escd` pipeline) | Closed |
+| [#550](https://github.com/polyquantum/estream-io/issues/550) | estream-io | FLIR → WASM Client Build (`.escd` pipeline) | Closed |
 | [#551](https://github.com/polyquantum/estream-io/issues/551) | estream-io | Wire Protocol SDK Reconciliation | Closed |
 | [#552](https://github.com/polyquantum/estream-io/issues/552) | estream-io | EphemeralPayload::FileShare variant | Open |

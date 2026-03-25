@@ -4,7 +4,7 @@
 **Date**: February 2026
 **Platform**: eStream v0.8.3
 **Upstream**: PolyKit v0.3.0, eStream scatter-cas, es-git, graph/DAG constructs
-**Build Pipeline**: FastLang (.fl) → ESCIR → Rust/WASM codegen → .escd
+**Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
 
@@ -21,7 +21,7 @@ Poly Data is a post-quantum encrypted, scatter-distributed file storage and vers
 | File metadata | Flat streams | `graph file_registry` with typed overlays |
 | Sharing | Flat ACL stream | `graph share_network` with typed edges |
 | poly-git | Custom git remote helper | Thin wrapper over `es-git` |
-| Circuit format | ESCIR YAML (`circuit.escir.yaml`) | FastLang `.fl` with PolyKit profiles |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
 | RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
 | Platform | eStream v0.8.1 | eStream v0.8.3 |
 
@@ -699,7 +699,7 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 | `polydata-eslm-accuracy` | governance | Auto-classification accuracy |
 | `polydata-eslm-review` | governance | Human-in-the-loop review queue |
 | `polydata-eslm-feedback` | governance | Training feedback trends |
-| `polydata-esn-ai-recs` | governance | ESCIR optimization recommendations |
+| `polydata-esn-ai-recs` | governance | FLIR optimization recommendations |
 | `polydata-sanitization-log` | governance | PII/PCI/HIPAA/GDPR sanitization audit |
 
 ---
@@ -748,7 +748,7 @@ polydata/
 ## Roadmap
 
 ### Phase 1: Core Storage (Q2 2026)
-- FastLang circuits (replacing ESCIR YAML)
+- FastLang circuits (replacing FLIR YAML)
 - `file_registry` graph + `version_history` DAG
 - scatter-cas integration for content-addressable storage
 - SPARK biometric auth (`poly-data-v1`)

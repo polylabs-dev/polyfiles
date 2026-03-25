@@ -1,7 +1,7 @@
 /**
  * AUTO-GENERATED — Do not edit manually.
  *
- * Generated from ESCIR circuit type definitions via:
+ * Generated from FLIR circuit type definitions via:
  *   estream generate typescript --circuits circuits/ --output packages/sdk/src/generated/
  *
  * Source circuits:
