@@ -1,0 +1,524 @@
+/// Spec: specs/POLYFILES_CE_APP_GRAPH_SPEC.md
+/// App Graph for PolyFiles — 15 ModuleNode definitions (12 core circuits + 3
+/// graph circuits) composing scatter-distributed encrypted storage. Registers
+/// intra-graph REQUIRES edges and cross-graph EDGE_BRIDGE_TO edges to PolyKit
+/// collaboration, PolyDocs document_edit, and eStream scatter-CAS.
+
+lex polylabs/polyfiles
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "core/deployment/module_stratum.fl" {
+    ModuleNode, ModuleEdge, InterAppEdge, CsrStorage,
+    CompilationReceipt, ResourceBudget8D, SemVer, CanaryTarget,
+    ModuleType, AperturePartition, ModuleState, RolloutState,
+    PersistencePolicy, OfflineCachePolicy, SLATier, EntitlementTier,
+    EnforcementMode, BridgeScope,
+    module_graph_add_module, module_graph_add_edge,
+    module_graph_add_bridge_edge,
+    EDGE_REQUIRES, EDGE_BRIDGE_TO,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYFILES_VERSION_MAJOR: u32 = 0
+const POLYFILES_VERSION_MINOR: u32 = 1
+const POLYFILES_VERSION_PATCH: u32 = 0
+const POLYFILES_APP_LEX: string = "polylabs/polyfiles"
+const POLYFILES_VERSION_STR: string = "0.1.0"
+const POLYFILES_MODULE_COUNT: u64 = 15
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+circuit polyfiles_placeholder_receipt() -> CompilationReceipt
+    lex polylabs/polyfiles
+    @status draft
+    @precision D
+{
+    CompilationReceipt {
+        source_hash: bytes(32, 0x00),
+        compiler_version: SemVer {
+            major: POLYFILES_VERSION_MAJOR,
+            minor: POLYFILES_VERSION_MINOR,
+            patch: POLYFILES_VERSION_PATCH,
+            pre_release: "",
+        },
+        output_hash: bytes(32, 0x00),
+        prime_device_id: None,
+        compilation_timestamp: 0,
+        reproducible_verified: false,
+        receipt_signature: bytes(4627, 0x00),
+    }
+}
+
+circuit make_polyfiles_module(
+    name: string,
+    partition: u8,
+    sla: u8,
+    budget: ResourceBudget8D
+) -> ModuleNode
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+    observe metrics: [module_name, aperture_partition]
+    meters [compute_cycles]
+{
+    ModuleNode {
+        name: name,
+        version_major: POLYFILES_VERSION_MAJOR,
+        version_minor: POLYFILES_VERSION_MINOR,
+        version_patch: POLYFILES_VERSION_PATCH,
+        version_pre: "",
+        module_type: ModuleType::SmartCircuit as u8,
+        content_hash: bytes(32, 0x00),
+        signature_chain: bytes(0),
+        aperture_partition: partition,
+        role_set: ["User", "Admin"],
+        required_entitlement: EntitlementTier::Free as u8,
+        classification_domains: [],
+        max_classification_level: 0,
+        compilation_receipt: polyfiles_placeholder_receipt(),
+        source_hash: bytes(32, 0x00),
+        compiler_version_major: POLYFILES_VERSION_MAJOR,
+        compiler_version_minor: POLYFILES_VERSION_MINOR,
+        prime_device_id: bytes(0),
+        reproducible_verified: false,
+        resource_budget: budget,
+        budget_enforcement_mode: EnforcementMode::Soft as u8,
+        state: ModuleState::Active as u8,
+        rollout_state: RolloutState::Canary as u8,
+        canary_target: None,
+        persistence: PersistencePolicy::Persistent as u8,
+        offline_cache_policy: OfflineCachePolicy::CacheAndVerify as u8,
+        max_staleness_seconds: 86400,
+        sla_tier: sla,
+        preferred_locality: "edge",
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    }
+}
+
+circuit make_requires_edge(
+    source: string,
+    target: string
+) -> ModuleEdge
+    lex polylabs/polyfiles
+    @status draft
+    @precision D
+{
+    ModuleEdge {
+        edge_type: EDGE_REQUIRES,
+        source_module: source,
+        source_version: POLYFILES_VERSION_STR,
+        target_module: target,
+        target_version_constraint: ">=" ++ POLYFILES_VERSION_STR,
+        metadata: bytes(0),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Module Definitions — 15 ModuleNodes (12 core + 3 graphs)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── polyfiles_chunk ── erasure-coded chunking over scatter-CAS ───────────────
+
+circuit polyfiles_chunk_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_chunk", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 400000, hash_ops: 8000, bandwidth: 200000,
+            storage: 500000, observe_events: 10000, proofs: 200,
+            consensus: 50, memory: 134217728,
+        })
+}
+
+// ── polyfiles_classify ── rule-based file type classification ────────────────
+
+circuit polyfiles_classify_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_classify", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 100000, hash_ops: 1000, bandwidth: 20000,
+            storage: 30000, observe_events: 5000, proofs: 50,
+            consensus: 10, memory: 16777216,
+        })
+}
+
+// ── polyfiles_dedup ── content-defined chunking + dedup ──────────────────────
+
+circuit polyfiles_dedup_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_dedup", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 300000, hash_ops: 10000, bandwidth: 100000,
+            storage: 200000, observe_events: 8000, proofs: 100,
+            consensus: 20, memory: 67108864,
+        })
+}
+
+// ── polyfiles_document_edit ── CRDT document editing via PolyDocs bridge ─────
+
+circuit polyfiles_document_edit_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_document_edit", AperturePartition::Head as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 250000, hash_ops: 4000, bandwidth: 80000,
+            storage: 150000, observe_events: 10000, proofs: 100,
+            consensus: 40, memory: 67108864,
+        })
+}
+
+// ── polyfiles_encrypt ── ML-KEM-1024 envelope encryption ─────────────────────
+
+circuit polyfiles_encrypt_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles, hash_ops]
+{
+    make_polyfiles_module("polyfiles_encrypt", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 500000, hash_ops: 15000, bandwidth: 150000,
+            storage: 100000, observe_events: 8000, proofs: 300,
+            consensus: 20, memory: 67108864,
+        })
+}
+
+// ── polyfiles_eslm_classify ── ESLM-powered semantic classification ──────────
+
+circuit polyfiles_eslm_classify_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_eslm_classify", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 200000, hash_ops: 2000, bandwidth: 40000,
+            storage: 50000, observe_events: 6000, proofs: 50,
+            consensus: 10, memory: 33554432,
+        })
+}
+
+// ── polyfiles_manifest ── file manifest + metadata index ─────────────────────
+
+circuit polyfiles_manifest_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_manifest", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 200000, hash_ops: 5000, bandwidth: 60000,
+            storage: 300000, observe_events: 10000, proofs: 150,
+            consensus: 30, memory: 67108864,
+        })
+}
+
+// ── polyfiles_metering ── per-user storage metering + quota ──────────────────
+
+circuit polyfiles_metering_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_metering", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 80000, hash_ops: 1000, bandwidth: 15000,
+            storage: 40000, observe_events: 5000, proofs: 30,
+            consensus: 10, memory: 16777216,
+        })
+}
+
+// ── polyfiles_platform_health ── health probes, latency histograms ───────────
+
+circuit polyfiles_platform_health_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_platform_health", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 50000, hash_ops: 500, bandwidth: 10000,
+            storage: 20000, observe_events: 8000, proofs: 20,
+            consensus: 5, memory: 8388608,
+        })
+}
+
+// ── polyfiles_rbac ── field-level access control + sharing policies ───────────
+
+circuit polyfiles_rbac_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_rbac", AperturePartition::Shared as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 150000, hash_ops: 3000, bandwidth: 30000,
+            storage: 60000, observe_events: 6000, proofs: 100,
+            consensus: 40, memory: 16777216,
+        })
+}
+
+// ── polyfiles_share ── PQ-encrypted share links + ACL propagation ────────────
+
+circuit polyfiles_share_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_share", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 200000, hash_ops: 5000, bandwidth: 80000,
+            storage: 100000, observe_events: 8000, proofs: 150,
+            consensus: 50, memory: 33554432,
+        })
+}
+
+// ── polyfiles_storage_router ── hot/warm/cold tiering + scatter routing ──────
+
+circuit polyfiles_storage_router_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("polyfiles_storage_router", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 300000, hash_ops: 6000, bandwidth: 150000,
+            storage: 200000, observe_events: 10000, proofs: 200,
+            consensus: 30, memory: 67108864,
+        })
+}
+
+// ── file_graph ── Stratum property graph: files, folders, tags ───────────────
+
+circuit file_graph_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("file_graph", AperturePartition::Backend as u8,
+        SLATier::Premium as u8, ResourceBudget8D {
+            execution: 250000, hash_ops: 8000, bandwidth: 60000,
+            storage: 400000, observe_events: 10000, proofs: 200,
+            consensus: 40, memory: 67108864,
+        })
+}
+
+// ── share_graph ── share relationship graph (users, groups, links) ───────────
+
+circuit share_graph_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("share_graph", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 100000, hash_ops: 3000, bandwidth: 40000,
+            storage: 80000, observe_events: 5000, proofs: 80,
+            consensus: 30, memory: 16777216,
+        })
+}
+
+// ── version_dag ── version history DAG per file ──────────────────────────────
+
+circuit version_dag_module() -> ModuleNode
+    lex polylabs/polyfiles  @status draft  @precision B
+    observe metrics: [module_init]  meters [compute_cycles]
+{
+    make_polyfiles_module("version_dag", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 120000, hash_ops: 4000, bandwidth: 30000,
+            storage: 150000, observe_events: 5000, proofs: 80,
+            consensus: 20, memory: 33554432,
+        })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Graph Registration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Register all 15 PolyFiles modules and their intra-graph REQUIRES dependency
+/// edges into the provided CsrStorage graph.
+circuit polyfiles_app_graph_register(
+    graph: CsrStorage
+) -> CsrStorage
+    lex polylabs/polyfiles
+    @status draft
+    @precision B
+    @attested true
+    invariant "capacity" { graph.num_nodes + POLYFILES_MODULE_COUNT as u32 <= 4096 }
+    observe metrics: [registered_module_count, registered_edge_count]
+    meters [compute_cycles, memory_bytes]
+{
+    let (g, id_chunk)           = module_graph_add_module(graph, polyfiles_chunk_module())
+    let (g, id_classify)        = module_graph_add_module(g, polyfiles_classify_module())
+    let (g, id_dedup)           = module_graph_add_module(g, polyfiles_dedup_module())
+    let (g, id_doc_edit)        = module_graph_add_module(g, polyfiles_document_edit_module())
+    let (g, id_encrypt)         = module_graph_add_module(g, polyfiles_encrypt_module())
+    let (g, id_eslm_classify)   = module_graph_add_module(g, polyfiles_eslm_classify_module())
+    let (g, id_manifest)        = module_graph_add_module(g, polyfiles_manifest_module())
+    let (g, id_metering)        = module_graph_add_module(g, polyfiles_metering_module())
+    let (g, id_health)          = module_graph_add_module(g, polyfiles_platform_health_module())
+    let (g, id_rbac)            = module_graph_add_module(g, polyfiles_rbac_module())
+    let (g, id_share)           = module_graph_add_module(g, polyfiles_share_module())
+    let (g, id_storage_router)  = module_graph_add_module(g, polyfiles_storage_router_module())
+    let (g, id_file_graph)      = module_graph_add_module(g, file_graph_module())
+    let (g, id_share_graph)     = module_graph_add_module(g, share_graph_module())
+    let (g, id_version_dag)     = module_graph_add_module(g, version_dag_module())
+
+    // ── Intra-graph REQUIRES edges ──────────────────────────────────────────
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_chunk", "polyfiles_encrypt"), id_chunk, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_dedup", "polyfiles_chunk"), id_dedup, id_chunk)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_classify", "polyfiles_manifest"), id_classify, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_eslm_classify", "polyfiles_classify"), id_eslm_classify, id_classify)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_document_edit", "polyfiles_manifest"), id_doc_edit, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_document_edit", "polyfiles_encrypt"), id_doc_edit, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_manifest", "file_graph"), id_manifest, id_file_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_metering", "polyfiles_manifest"), id_metering, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_platform_health", "polyfiles_metering"), id_health, id_metering)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_rbac", "file_graph"), id_rbac, id_file_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_share", "polyfiles_rbac"), id_share, id_rbac)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_share", "share_graph"), id_share, id_share_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_storage_router", "polyfiles_chunk"), id_storage_router, id_chunk)
+    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_storage_router", "polyfiles_dedup"), id_storage_router, id_dedup)
+    let g = module_graph_add_edge(g, make_requires_edge("version_dag", "polyfiles_manifest"), id_version_dag, id_manifest)
+
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cross-Graph Bridge Edges
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Register EDGE_BRIDGE_TO edges linking PolyFiles to external graphs:
+/// PolyDocs (document editing), PolyKit (collaboration), eStream scatter-CAS.
+circuit polyfiles_register_bridge_edges(
+    graph: CsrStorage
+) -> CsrStorage
+    lex polylabs/polyfiles
+    @status draft
+    @precision B
+    @attested true
+    observe metrics: [bridge_count]
+    meters [compute_cycles]
+{
+    let doc_edit_id = 0xFFFFFFFF as u32
+    let share_id = 0xFFFFFFFF as u32
+    let chunk_id = 0xFFFFFFFF as u32
+    let router_id = 0xFFFFFFFF as u32
+
+    for i in 0..graph.num_nodes {
+        let node_data = graph.node_data[i]
+        let module = deserialize(node_data) as ModuleNode
+        if module.name == "polyfiles_document_edit" { doc_edit_id = i }
+        if module.name == "polyfiles_share" { share_id = i }
+        if module.name == "polyfiles_chunk" { chunk_id = i }
+        if module.name == "polyfiles_storage_router" { router_id = i }
+    }
+
+    let g = graph
+
+    // polyfiles_document_edit -> PolyDocs editor
+    if doc_edit_id != 0xFFFFFFFF as u32 {
+        let polydocs_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYFILES_APP_LEX,
+            source_module: "polyfiles_document_edit",
+            target_lex: "polylabs/polydocs",
+            target_module: "polydocs_editor",
+            bridge_scope: BridgeScope::Product as u8,
+            shared_fields: ["document_ops", "crdt_state", "version_id"],
+            redacted_fields: [],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, polydocs_bridge, doc_edit_id)
+    }
+
+    // polyfiles_share -> PolyKit collaboration
+    if share_id != 0xFFFFFFFF as u32 {
+        let polykit_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYFILES_APP_LEX,
+            source_module: "polyfiles_share",
+            target_lex: "polylabs/polykit",
+            target_module: "polykit_collaboration",
+            bridge_scope: BridgeScope::Product as u8,
+            shared_fields: ["share_token", "acl_policy", "invite_state"],
+            redacted_fields: [],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, polykit_bridge, share_id)
+    }
+
+    // polyfiles_chunk -> eStream scatter-CAS
+    if chunk_id != 0xFFFFFFFF as u32 {
+        let scatter_chunk_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYFILES_APP_LEX,
+            source_module: "polyfiles_chunk",
+            target_lex: "core/scatter_cas",
+            target_module: "scatter_cas_core",
+            bridge_scope: BridgeScope::Platform as u8,
+            shared_fields: ["chunk_id", "erasure_params", "shard_map"],
+            redacted_fields: [],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, scatter_chunk_bridge, chunk_id)
+    }
+
+    // polyfiles_storage_router -> eStream scatter-CAS
+    if router_id != 0xFFFFFFFF as u32 {
+        let scatter_router_bridge = InterAppEdge {
+            edge_type: EDGE_BRIDGE_TO,
+            source_lex: POLYFILES_APP_LEX,
+            source_module: "polyfiles_storage_router",
+            target_lex: "core/scatter_cas",
+            target_module: "scatter_cas_core",
+            bridge_scope: BridgeScope::Platform as u8,
+            shared_fields: ["tier_policy", "routing_table", "replica_set"],
+            redacted_fields: [],
+            bilateral_confirmed: false,
+        }
+        g = module_graph_add_bridge_edge(g, scatter_router_bridge, router_id)
+    }
+
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Golden Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+circuit test_polyfiles_app_graph_register()
+    lex polylabs/polyfiles
+{
+    let empty_graph = CsrStorage { num_nodes: 0, node_data: [], edge_data: [], bridge_data: [] }
+    let g = polyfiles_app_graph_register(empty_graph)
+    assert g.num_nodes == 15, "expected 15 modules"
+    assert len(g.edge_data) == 15, "expected 15 intra-graph edges"
+}
+
+#[test]
+circuit test_polyfiles_bridge_edges()
+    lex polylabs/polyfiles
+{
+    let empty_graph = CsrStorage { num_nodes: 0, node_data: [], edge_data: [], bridge_data: [] }
+    let g = polyfiles_app_graph_register(empty_graph)
+    let g = polyfiles_register_bridge_edges(g)
+    assert len(g.bridge_data) == 4, "expected 4 bridge edges"
+}
+
+#[test]
+circuit test_make_polyfiles_module_defaults()
+    lex polylabs/polyfiles
+{
+    let m = make_polyfiles_module("test_module", AperturePartition::Backend as u8,
+        SLATier::Standard as u8, ResourceBudget8D {
+            execution: 100, hash_ops: 10, bandwidth: 50,
+            storage: 50, observe_events: 10, proofs: 1,
+            consensus: 1, memory: 1024,
+        })
+    assert m.name == "test_module"
+    assert m.version_major == 0
+    assert m.version_minor == 1
+    assert m.state == ModuleState::Active as u8
+}

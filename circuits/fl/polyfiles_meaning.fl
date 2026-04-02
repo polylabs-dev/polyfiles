@@ -1,0 +1,233 @@
+/// Spec: specs/POLYFILES_CE_APP_GRAPH_SPEC.md §2-4
+/// CE Meaning Domains for PolyFiles — 3 meaning domains tracking storage
+/// access patterns, dedup efficiency, and ESLM classification accuracy.
+/// Includes noise filter with 4 suppression rules and 4 signal rules,
+/// plus 2 SME panels for tiering optimization and model calibration.
+
+lex polylabs/polyfiles
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "core/intelligence/ce_meaning.fl" {
+    MeaningDomain, NoiseRule, SignalRule, NoiseFilter,
+    SMEPanel, SMEPanelConfig, CERegistration,
+    ce_register_meaning_domain, ce_register_noise_filter,
+    ce_register_sme_panel,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYFILES_CE_LEX: string = "polylabs/polyfiles"
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §1  Meaning Domains
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Hot/warm/cold tiering decisions and access frequency distributions.
+/// CE learns per-user temporal patterns to predict tier migrations.
+circuit storage_access_patterns_domain() -> MeaningDomain
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    MeaningDomain {
+        domain_id: "storage/access_patterns",
+        lex_namespace: POLYFILES_CE_LEX,
+        description: "Hot/warm/cold tiering and access frequency distributions",
+        signals: [
+            "tier_migration_event",
+            "access_frequency_shift",
+            "cost_per_gb_trend",
+            "latency_percentile_change",
+        ],
+        retention_days: 90,
+        aggregation_window_ms: 3600000,
+        min_confidence_bps: 7000,
+    }
+}
+
+/// Dedup ratio trends across scatter-CAS namespace. CE detects declining
+/// ratios indicating content drift and recommends re-chunking strategies.
+circuit storage_dedup_efficiency_domain() -> MeaningDomain
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    MeaningDomain {
+        domain_id: "storage/dedup_efficiency",
+        lex_namespace: POLYFILES_CE_LEX,
+        description: "Dedup ratio trends and storage savings monitoring",
+        signals: [
+            "dedup_ratio_per_namespace",
+            "chunk_size_distribution_change",
+            "storage_savings_rate",
+        ],
+        retention_days: 90,
+        aggregation_window_ms: 86400000,
+        min_confidence_bps: 8000,
+    }
+}
+
+/// ESLM classification accuracy against ground truth labels. CE calibrates
+/// confidence thresholds and detects model drift.
+circuit storage_classification_domain() -> MeaningDomain
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    MeaningDomain {
+        domain_id: "storage/classification",
+        lex_namespace: POLYFILES_CE_LEX,
+        description: "ESLM classification accuracy and model drift detection",
+        signals: [
+            "classification_accuracy_delta",
+            "confidence_distribution_skew",
+            "novel_file_type_encounter",
+            "misclassification_cluster",
+        ],
+        retention_days: 60,
+        aggregation_window_ms: 3600000,
+        min_confidence_bps: 9000,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §2  Noise Filter
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polyfiles_noise_filter() -> NoiseFilter
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    NoiseFilter {
+        lex_namespace: POLYFILES_CE_LEX,
+        suppression_rules: [
+            NoiseRule { pattern: "thumbnail_generation", reason: "High-frequency, no storage semantic value" },
+            NoiseRule { pattern: "cache_invalidation_churn", reason: "TTL-driven, not user-initiated" },
+            NoiseRule { pattern: "heartbeat_probe", reason: "Periodic health checks carry no meaning" },
+            NoiseRule { pattern: "prefetch_warming", reason: "Background optimization, not behavioral signal" },
+        ],
+        signal_rules: [
+            SignalRule { pattern: "storage_anomaly_capacity_spike", action: "alert_root_cause_panel" },
+            SignalRule { pattern: "classification_mismatch_eslm_vs_rule", action: "calibration_sme_panel" },
+            SignalRule { pattern: "dedup_ratio_degradation_7d", action: "rechunking_recommendation" },
+            SignalRule { pattern: "access_pattern_shift_hot_to_cold", action: "tiering_review_panel" },
+        ],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §3  SME Panels
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Storage tiering optimization: weighs cost savings against latency risk.
+circuit storage_tiering_panel() -> SMEPanel
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    SMEPanel {
+        panel_id: "polyfiles/storage_tiering_optimization",
+        lex_namespace: POLYFILES_CE_LEX,
+        trigger: "access_pattern_shift OR cost_per_gb_exceeds_threshold",
+        config: SMEPanelConfig {
+            for_position: "Migrate to colder tier — cost savings",
+            against_position: "Latency risk, user disruption",
+            min_panelists: 2,
+            max_deliberation_ms: 30000,
+            confidence_threshold_bps: 7500,
+        },
+        output_fields: ["tiering_recommendation", "confidence_score", "projected_cost_delta"],
+    }
+}
+
+/// Classification model calibration: decides retrain vs keep current model.
+circuit classification_calibration_panel() -> SMEPanel
+    lex polylabs/polyfiles
+    @status draft
+    @precision C
+{
+    SMEPanel {
+        panel_id: "polyfiles/classification_model_calibration",
+        lex_namespace: POLYFILES_CE_LEX,
+        trigger: "eslm_accuracy_below_95pct OR novel_file_type_cluster",
+        config: SMEPanelConfig {
+            for_position: "Retrain with new corpus",
+            against_position: "Current model sufficient, outlier noise",
+            min_panelists: 2,
+            max_deliberation_ms: 60000,
+            confidence_threshold_bps: 8000,
+        },
+        output_fields: ["retrain_decision", "min_sample_size", "confidence_interval"],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §4  CE Registration Orchestrator
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Register all PolyFiles CE components: 3 meaning domains, noise filter,
+/// and 2 SME panels under the product lex namespace.
+circuit polyfiles_register_ce(product_lex: string) -> bool
+    lex polylabs/polyfiles
+    @status draft
+    @precision B
+    @attested true
+    observe metrics: [domains_registered, panels_registered]
+    meters [compute_cycles]
+{
+    let ok = true
+
+    let ok = ok && ce_register_meaning_domain(product_lex, storage_access_patterns_domain())
+    let ok = ok && ce_register_meaning_domain(product_lex, storage_dedup_efficiency_domain())
+    let ok = ok && ce_register_meaning_domain(product_lex, storage_classification_domain())
+
+    let ok = ok && ce_register_noise_filter(product_lex, polyfiles_noise_filter())
+
+    let ok = ok && ce_register_sme_panel(product_lex, storage_tiering_panel())
+    let ok = ok && ce_register_sme_panel(product_lex, classification_calibration_panel())
+
+    ok
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Golden Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+circuit test_meaning_domains_valid()
+    lex polylabs/polyfiles
+{
+    let d1 = storage_access_patterns_domain()
+    let d2 = storage_dedup_efficiency_domain()
+    let d3 = storage_classification_domain()
+    assert d1.domain_id == "storage/access_patterns"
+    assert d2.domain_id == "storage/dedup_efficiency"
+    assert d3.domain_id == "storage/classification"
+    assert len(d1.signals) == 4
+    assert len(d2.signals) == 3
+    assert len(d3.signals) == 4
+}
+
+#[test]
+circuit test_noise_filter_counts()
+    lex polylabs/polyfiles
+{
+    let nf = polyfiles_noise_filter()
+    assert len(nf.suppression_rules) == 4, "expected 4 suppression rules"
+    assert len(nf.signal_rules) == 4, "expected 4 signal rules"
+}
+
+#[test]
+circuit test_sme_panels_configured()
+    lex polylabs/polyfiles
+{
+    let p1 = storage_tiering_panel()
+    let p2 = classification_calibration_panel()
+    assert p1.panel_id == "polyfiles/storage_tiering_optimization"
+    assert p2.panel_id == "polyfiles/classification_model_calibration"
+    assert p1.config.min_panelists >= 2
+    assert p2.config.confidence_threshold_bps >= 7500
+}
