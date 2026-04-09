@@ -1,7 +1,7 @@
-// Poly Files Share Graph — user/file/link relationship network
+// Q Files Share Graph — user/file/link relationship network
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files
+//   esn/global/org/polyqlabs/files
 //     └── sub_lex share fan_in  ← per-share relationship; aggregates fan up
 //
 // Models the sharing network as a typed graph: users share files with
@@ -10,8 +10,8 @@
 // control field-level redaction, obfuscation, and anomaly detection
 // across the share network.
 
-import polykit_identity from "../../../polykit/circuits/fl/polykit_identity.fl"
-import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_identity from "../../../qkit/circuits/fl/qkit_identity.fl"
+import qkit_metering from "../../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
@@ -25,7 +25,7 @@ data ShareUserNode : files v1 {
     joined_ms: u64,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         redact [email]
         obfuscate [user_id]
@@ -43,7 +43,7 @@ data SharedFileNode : files v1 {
     created_ms: u64,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -62,7 +62,7 @@ data EphemeralLinkNode : files v1 {
     state: ShareState,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         redact [link_secret]
         infer on_write
@@ -94,7 +94,7 @@ data OwnsEdge : files v1 {
     file_id: FileId,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -112,7 +112,7 @@ data ShareEdge : files v1 {
     expires_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [from_user, to_user]
         infer on_write
@@ -126,7 +126,7 @@ data EphemeralEdge : files v1 {
     state: ShareState,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [creator_id]
         infer on_write
@@ -139,7 +139,7 @@ data ShareListResult : files v1 {
     total_count: u32,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -155,7 +155,7 @@ data SharedFileEntry : files v1 {
     granted_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -282,7 +282,7 @@ series share_series: share_network
 
 stream share_graph_events: event<ShareEdge>
     | throttle 200/s burst 500
-    | topic "polylabs.files.share.graph.{from_user}"
+    | topic "polyqlabs.files.share.graph.{from_user}"
     | retention permanent
     | hash_chain true
 
@@ -294,7 +294,7 @@ circuit add_share_user(user_id: UserId, public_key: bytes(2592)) -> ShareUserNod
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex share fan_in
     }
     @observe metrics: [share_users_added, graph_node_count]
@@ -303,7 +303,7 @@ circuit add_share_user(user_id: UserId, public_key: bytes(2592)) -> ShareUserNod
     property safety "user_node_unique" { !exists(share_users, user_id) || result == existing }
     wasm_abi [eslite_insert, eslite_query, now]
 {
-    let derived_id = polykit_identity::derive_user_id(public_key)
+    let derived_id = qkit_identity::derive_user_id(public_key)
     if derived_id != user_id { return error("identity_mismatch") }
 
     let existing = eslite_query("share_users", user_id)
@@ -332,7 +332,7 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex share fan_in
     }
     meters [compute_cycles]
@@ -344,7 +344,7 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
     property safety "share_creates_pending_edge" { result.state == ShareState::Pending }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
-    let from_derived = polykit_identity::derive_user_id(from_pk)
+    let from_derived = qkit_identity::derive_user_id(from_pk)
     if from_derived != from_user { return error("identity_mismatch") }
 
     let file_node = eslite_query("shared_files", file_id)
@@ -355,7 +355,7 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
     let ts = now()
     let share_id = sha3_256(from_user ++ to_user ++ file_id ++ u64_to_bytes(ts))
     let sig_payload = share_id ++ to_user ++ file_id
-    let _sig = polykit_identity::sign_message(from_sk, sig_payload)
+    let _sig = qkit_identity::sign_message(from_sk, sig_payload)
 
     let edge = ShareEdge {
         share_id: share_id,
@@ -385,7 +385,7 @@ circuit share_file(from_user: UserId, from_pk: bytes(2592), from_sk: bytes(4896)
 
     emit(share_graph_events, edge)
 
-    polykit_metering::record_usage(from_user, "share", {
+    qkit_metering::record_usage(from_user, "share", {
         executions: 0, hashes: 1, bandwidth: 0, storage: 0,
         observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -399,7 +399,7 @@ circuit create_ephemeral(file_id: FileId, creator_id: UserId, creator_sk: bytes(
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex share fan_in
     }
     meters [compute_cycles]
@@ -454,7 +454,7 @@ circuit revoke_share(share_id: ShareId, revoker_id: UserId, revoker_pk: bytes(25
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex share fan_in
     }
     @observe metrics: [shares_revoked, revoke_latency_ms]
@@ -463,10 +463,10 @@ circuit revoke_share(share_id: ShareId, revoker_id: UserId, revoker_pk: bytes(25
     property safety "revoke_is_terminal" { result.state == ShareState::Revoked }
     wasm_abi [eslite_query, eslite_insert, now]
 {
-    let revoker_derived = polykit_identity::derive_user_id(revoker_pk)
+    let revoker_derived = qkit_identity::derive_user_id(revoker_pk)
     if revoker_derived != revoker_id { return error("identity_mismatch") }
 
-    let sig_valid = polykit_identity::verify_signature(revoker_pk, share_id, revoker_sig)
+    let sig_valid = qkit_identity::verify_signature(revoker_pk, share_id, revoker_sig)
     if !sig_valid { return error("invalid_signature") }
 
     let edge = eslite_query("share_edges", share_id)
@@ -497,7 +497,7 @@ circuit list_shared(user_id: UserId, offset: u32, limit: u32) -> ShareListResult
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [share_list_queries, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
@@ -540,7 +540,7 @@ circuit list_shared(user_id: UserId, offset: u32, limit: u32) -> ShareListResult
 test golden "add_share_user_node" {
     steps {
         let (pk, _) = mldsa_keygen()
-        let user_id = polykit_identity::derive_user_id(pk)
+        let user_id = qkit_identity::derive_user_id(pk)
 
         let node = add_share_user(user_id, pk)
     }
@@ -556,9 +556,9 @@ test golden "add_share_user_node" {
 test golden "share_file_creates_edge" {
     steps {
         let (from_pk, from_sk) = mldsa_keygen()
-        let from_user = polykit_identity::derive_user_id(from_pk)
+        let from_user = qkit_identity::derive_user_id(from_pk)
         let (to_pk, _) = mldsa_keygen()
-        let to_user = polykit_identity::derive_user_id(to_pk)
+        let to_user = qkit_identity::derive_user_id(to_pk)
         let file_id = sha3_256(bytes("graph-shared-file"))
 
         let edge = share_file(from_user, from_pk, from_sk, to_user, file_id, SharePermission::ReadOnly, 86400000)
@@ -576,7 +576,7 @@ test golden "share_file_creates_edge" {
 test golden "create_ephemeral_link_node" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let creator_id = polykit_identity::derive_user_id(pk)
+        let creator_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("ephemeral-graph-file"))
 
         let node = create_ephemeral(file_id, creator_id, sk, 50, 7200000)
@@ -595,9 +595,9 @@ test golden "create_ephemeral_link_node" {
 test golden "revoke_share_edge" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let revoker_id = polykit_identity::derive_user_id(pk)
+        let revoker_id = qkit_identity::derive_user_id(pk)
         let share_id = sha3_256(bytes("share-to-revoke"))
-        let sig = polykit_identity::sign_message(sk, share_id)
+        let sig = qkit_identity::sign_message(sk, share_id)
 
         let revoked = revoke_share(share_id, revoker_id, pk, sig)
     }
@@ -610,7 +610,7 @@ test golden "revoke_share_edge" {
 test golden "list_shared_files_for_user" {
     steps {
         let (pk, _) = mldsa_keygen()
-        let user_id = polykit_identity::derive_user_id(pk)
+        let user_id = qkit_identity::derive_user_id(pk)
 
         let result = list_shared(user_id, 0, 50)
     }

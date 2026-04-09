@@ -1,7 +1,7 @@
 // PolyFiles File Graph — File registry with distribute health and classification overlays
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files
+//   esn/global/org/polyqlabs/files
 //   DAG-based file registry tracking ownership, containment, classification,
 //   distribute health, offline cache state, and versioning metadata.
 //   Anomaly detection on rapid file creation/deletion patterns.
@@ -14,8 +14,8 @@
 //   size_bytes       — u64 original file size per FileNode
 //   shard_count      — u32 total shards across all chunks per FileNode
 
-import polykit_metering
-import polykit_governance
+import qkit_metering
+import qkit_governance
 
 type UserId = bytes(16)
 type FileId = bytes(32)
@@ -46,7 +46,7 @@ data FileNode : files v1 {
     offline_cached: bool,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         redact [filename]
@@ -65,7 +65,7 @@ data FolderNode : files v1 {
     subfolder_count: u64,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -79,7 +79,7 @@ data ContainsEdge : files v1 {
     added_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -92,7 +92,7 @@ data OwnedByEdge : files v1 {
     permission_level: string,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -109,7 +109,7 @@ data AnomalyEvent : files v1 {
     severity: string,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -117,7 +117,7 @@ data AnomalyEvent : files v1 {
     }
 
 graph file_registry
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [graph_nodes, graph_edges, graph_queries, overlay_updates]
     monitor "graph_consistency" { orphan_nodes == 0 }
     monitor "scatter_health_global" { avg_scatter_health > 0.95 }
@@ -181,7 +181,7 @@ circuit register_file(
     owner_id: UserId,
 ) -> FileNode
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [files_registered, registration_latency]
     monitor "registration_rate" { files_registered_per_min < 1000 }
@@ -221,7 +221,7 @@ circuit register_folder(
     folder: FolderNode,
 ) -> FolderNode
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [folders_registered]
     invariant "folder_id_unique" { !graph_contains(file_registry, FolderNode, folder.folder_id) }
@@ -244,7 +244,7 @@ circuit register_folder(
 // --- Update distribute health for a file ---
 circuit update_scatter_health(file_id: FileId, available_shards: u32, total_shards: u32) -> f32
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [scatter_health_updates, degraded_files]
     monitor "shard_degradation" { health < 0.8 }
@@ -263,7 +263,7 @@ circuit update_scatter_health(file_id: FileId, available_shards: u32, total_shar
 // --- Remove a file from the registry ---
 circuit unregister_file(file_id: FileId, user_id: UserId) -> bool
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [files_unregistered, deletion_latency]
     invariant "file_exists" { graph_contains(file_registry, FileNode, file_id) }
@@ -283,7 +283,7 @@ circuit query_by_classification(
     owner_id: option<UserId>,
 ) -> list<FileNode>
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [graph_queries, query_result_count]
     invariant "valid_classification" { classification in Classification }
@@ -301,7 +301,7 @@ circuit query_by_classification(
 // --- Anomaly detection: rapid file creation ---
 circuit check_creation_anomaly(user_id: UserId) -> option<AnomalyEvent>
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [creation_anomalies_detected]
     property safety "anomaly_has_evidence" { result.is_some() implies result.unwrap().count > threshold }
@@ -329,7 +329,7 @@ circuit check_creation_anomaly(user_id: UserId) -> option<AnomalyEvent>
 // --- Anomaly detection: rapid file deletion ---
 circuit check_deletion_anomaly(user_id: UserId) -> option<AnomalyEvent>
     profile poly_framework_standard
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @precision C
     @observe metrics: [deletion_anomalies_detected]
     property safety "deletion_anomaly_flagged" { result.is_some() implies result.unwrap().count > threshold }

@@ -12,7 +12,7 @@
  *            TIME_RANGE (filters by time window)
  *            FILTER_RESET (clears filters)
  *
- * Lex stream: polylabs.data.eslm.sanitization
+ * Lex stream: polyqlabs.data.eslm.sanitization
  * Required roles: polydata-compliance, polydata-operator
  */
 
@@ -37,7 +37,7 @@ export default function EslmSanitizationLogWidget() {
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
   const { data: liveData, status } = useStreamSubscription(
-    'polylabs.data.eslm.sanitization',
+    'polyqlabs.data.eslm.sanitization',
   );
 
   const data = fixture ?? liveData;

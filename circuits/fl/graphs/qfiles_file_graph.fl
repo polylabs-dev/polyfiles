@@ -1,7 +1,7 @@
-// Poly Files File Registry Graph — typed graph for the file system
+// Q Files File Registry Graph — typed graph for the file system
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files
+//   esn/global/org/polyqlabs/files
 //     └── sub_lex file fan_in  ← per-file metadata; aggregates fan up
 //
 // Models the file system as a typed graph. Files and folders are nodes;
@@ -11,8 +11,8 @@
 // under lex governance. Cortex policies control field-level obfuscation
 // and anomaly detection across the file registry.
 
-import polykit_identity from "../../../polykit/circuits/fl/polykit_identity.fl"
-import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_identity from "../../../qkit/circuits/fl/qkit_identity.fl"
+import qkit_metering from "../../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
@@ -31,7 +31,7 @@ data FileNode : files v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -49,7 +49,7 @@ data FolderNode : files v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -65,7 +65,7 @@ data ContainsEdge : files v1 {
     added_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -77,7 +77,7 @@ data OwnedByEdge : files v1 {
     owner_since_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -102,7 +102,7 @@ data FolderListing : files v1 {
     total_count: u32,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -115,7 +115,7 @@ data MoveResult : files v1 {
     moved_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -200,7 +200,7 @@ series file_series: file_registry
 
 stream file_events: event<FileNode>
     | throttle 500/s burst 1000
-    | topic "polylabs.files.{owner_id}.file.{file_id}"
+    | topic "polyqlabs.files.{owner_id}.file.{file_id}"
     | retention policy_based
     | hash_chain true
 
@@ -212,7 +212,7 @@ circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
@@ -224,7 +224,7 @@ circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     property safety "file_id_deterministic" { file_id == sha3_256(owner_id ++ folder_id ++ content_hash ++ ts) }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
-    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    let derived_id = qkit_identity::derive_user_id(owner_pk)
     if derived_id != owner_id { return error("identity_mismatch") }
 
     let ts = now()
@@ -276,11 +276,11 @@ circuit create_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     eslite_insert("folders", folder_id, updated_folder)
 
     let sig_payload = file_id ++ content_hash ++ manifest_hash
-    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+    let _sig = qkit_identity::sign_message(owner_sk, sig_payload)
 
     emit(file_events, node)
 
-    polykit_metering::record_usage(owner_id, "file", {
+    qkit_metering::record_usage(owner_id, "file", {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: size_bytes, observables: 1, proofs: 0,
         circuits: 1, mpc_sessions: 0,
@@ -295,7 +295,7 @@ circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: Folder
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
@@ -306,7 +306,7 @@ circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: Folder
     property safety "folder_inherits_parent_classification" { effective_class >= parent.classification }
     wasm_abi [eslite_insert, eslite_query, now]
 {
-    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    let derived_id = qkit_identity::derive_user_id(owner_pk)
     if derived_id != owner_id { return error("identity_mismatch") }
 
     let ts = now()
@@ -348,7 +348,7 @@ circuit create_folder(owner_id: UserId, owner_pk: bytes(2592), parent_id: Folder
 
     eslite_insert("folders", folder_id, folder)
 
-    polykit_metering::record_usage(owner_id, "folder", {
+    qkit_metering::record_usage(owner_id, "folder", {
         executions: 1, hashes: 0, bandwidth: 0, storage: 0,
         observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -362,7 +362,7 @@ circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles]
@@ -372,7 +372,7 @@ circuit move_file(owner_id: UserId, owner_pk: bytes(2592), file_id: FileId, old_
     property safety "no_classification_downgrade" { file.classification <= dst.classification }
     wasm_abi [eslite_insert, eslite_query, eslite_delete, now]
 {
-    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    let derived_id = qkit_identity::derive_user_id(owner_pk)
     if derived_id != owner_id { return error("identity_mismatch") }
 
     let file = eslite_query("files", file_id)
@@ -426,7 +426,7 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles, storage]
@@ -435,7 +435,7 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     property safety "delete_requires_ownership" { file.owner_id == owner_id }
     wasm_abi [eslite_query, eslite_delete, eslite_insert, now]
 {
-    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    let derived_id = qkit_identity::derive_user_id(owner_pk)
     if derived_id != owner_id { return error("identity_mismatch") }
 
     let file = eslite_query("files", file_id)
@@ -443,7 +443,7 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
     if file.owner_id != owner_id { return error("not_file_owner") }
 
     let sig_payload = file_id ++ bytes(1){0xFF}
-    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+    let _sig = qkit_identity::sign_message(owner_sk, sig_payload)
 
     eslite_delete("files", file_id)
     eslite_delete("contains", parent_id ++ file_id)
@@ -459,7 +459,7 @@ circuit delete_file(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(489
         })
     }
 
-    polykit_metering::record_usage(owner_id, "file", {
+    qkit_metering::record_usage(owner_id, "file", {
         executions: 1, hashes: 0, bandwidth: 0,
         storage: 0 - file.size_bytes, observables: 1, proofs: 0,
         circuits: 1, mpc_sessions: 0,
@@ -474,7 +474,7 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex file fan_in
     }
     meters [compute_cycles]
@@ -485,7 +485,7 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
     property safety "reclassification_audited" { audit_trail records reclassification }
     wasm_abi [eslite_query, eslite_insert, now]
 {
-    let derived_id = polykit_identity::derive_user_id(owner_pk)
+    let derived_id = qkit_identity::derive_user_id(owner_pk)
     if derived_id != owner_id { return error("identity_mismatch") }
 
     let file = eslite_query("files", file_id)
@@ -493,7 +493,7 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
     if file.owner_id != owner_id { return error("not_file_owner") }
 
     let sig_payload = file_id ++ bytes(1){new_classification}
-    let _sig = polykit_identity::sign_message(owner_sk, sig_payload)
+    let _sig = qkit_identity::sign_message(owner_sk, sig_payload)
 
     let ts = now()
     let updated = { ...file,
@@ -502,7 +502,7 @@ circuit reclassify(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896
     }
     eslite_insert("files", file_id, updated)
 
-    polykit_metering::record_usage(owner_id, "classify", {
+    qkit_metering::record_usage(owner_id, "classify", {
         executions: 1, hashes: 0, bandwidth: 0, storage: 0,
         observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -516,7 +516,7 @@ circuit list_folder(owner_id: UserId, folder_id: FolderId, offset: u32, limit: u
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [folder_listings, results_returned]
     monitor "list_latency" { list_time_ms < 100 }
     invariant "limit_bounded" { limit <= 1000 }
@@ -557,7 +557,7 @@ circuit list_folder(owner_id: UserId, folder_id: FolderId, offset: u32, limit: u
 test golden "create_file_in_folder" {
     steps {
         let (owner_pk, owner_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let owner_id = qkit_identity::derive_user_id(owner_pk)
         let folder_id = sha3_256(bytes("root-folder"))
         let content_hash = sha3_256(bytes("file content"))
         let manifest_hash = sha3_256(bytes("manifest"))
@@ -583,7 +583,7 @@ test golden "create_file_in_folder" {
 test golden "create_folder_inherits_classification" {
     steps {
         let (owner_pk, owner_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let owner_id = qkit_identity::derive_user_id(owner_pk)
         let parent_id = sha3_256(bytes("parent-sensitive"))
 
         let folder = create_folder(owner_id, owner_pk, parent_id, "sub-folder", 0)
@@ -601,7 +601,7 @@ test golden "create_folder_inherits_classification" {
 test golden "move_file_between_folders" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(pk)
+        let owner_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("moveable-file"))
         let old_parent = sha3_256(bytes("source-folder"))
         let new_parent = sha3_256(bytes("dest-folder"))
@@ -619,7 +619,7 @@ test golden "move_file_between_folders" {
 test golden "list_folder_contents" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(pk)
+        let owner_id = qkit_identity::derive_user_id(pk)
         let folder_id = sha3_256(bytes("listing-folder"))
 
         let listing = list_folder(owner_id, folder_id, 0, 100)
@@ -633,7 +633,7 @@ test golden "list_folder_contents" {
 test golden "reclassify_file_upgrade" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(pk)
+        let owner_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("reclassify-file"))
 
         let updated = reclassify(owner_id, pk, sk, file_id, 3)

@@ -1,16 +1,16 @@
-/// Poly Files Platform Health — Blind relay pattern health monitoring
+/// Q Files Platform Health — Blind relay pattern health monitoring
 ///
 /// Aggregates file-operation metrics through blinded, cohort-enforced telemetry.
-/// Stratum: kv store + lex governance under esn/global/org/polylabs/files.
+/// Stratum: kv store + lex governance under esn/global/org/polyqlabs/files.
 /// Cortex: obfuscation, write-time inference, anomaly alerting to files-team.
 ///
 /// Zero-linkage: HKDF("poly-files-telemetry-v1") isolates all identity.
 /// No content bytes, file names, or user paths ever reach StreamSight.
 ///
-/// govern lex global/org/polylabs/files
+/// govern lex global/org/polyqlabs/files
 
-import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_blind_telemetry from "../../qkit/circuits/fl/qkit_blind_telemetry.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Data Declarations with Stratum + Cortex ─────────────────────────
 
@@ -31,7 +31,7 @@ data PlatformMetrics : files v1 {
     collected_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [blinded_user_id, anomaly_score]
         infer on_write
@@ -75,7 +75,7 @@ circuit files_platform_health(
     version_creates: u64,
 ) -> PlatformMetrics
     profile poly_framework_standard
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         governance hierarchical
         audit_trail true
         sub_lex file_ops fan_in
@@ -107,9 +107,9 @@ circuit files_platform_health(
 {
     let ts = now_ns() / 1000000
 
-    let blinded = polykit_blind_telemetry::blind_user_id(spark_id, "poly-files-telemetry-v1")
+    let blinded = qkit_blind_telemetry::blind_user_id(spark_id, "poly-files-telemetry-v1")
 
-    let (cohort_status, cohort_ok) = polykit_blind_telemetry::enforce_cohort(active_user_count, 50)
+    let (cohort_status, cohort_ok) = qkit_blind_telemetry::enforce_cohort(active_user_count, 50)
 
     let file_ops_baseline = streamsight_baseline("file_operations", 3600000)
     let current_deviation = if file_ops_baseline > 0 {
@@ -184,7 +184,7 @@ circuit files_anomaly_check(
     window_ms: u64,
 ) -> (HealthStatus, f64, string)
     profile poly_framework_standard
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         governance hierarchical
         audit_trail true
     }

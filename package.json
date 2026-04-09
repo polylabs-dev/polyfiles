@@ -1,5 +1,5 @@
 {
-  "name": "@polylabs/polydata",
+  "name": "@polyqlabs/polydata",
   "version": "0.1.0",
   "private": true,
   "description": "Post-quantum encrypted, scatter-distributed file storage built on eStream v0.8.1",

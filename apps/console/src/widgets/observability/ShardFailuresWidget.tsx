@@ -9,7 +9,7 @@
  *            DEVIATION_SELECT (highlights if shard failure metric)
  *            FILTER_RESET (clears highlights)
  *
- * Lex stream: polylabs.data.telemetry
+ * Lex stream: polyqlabs.data.telemetry
  * Required role: polydata-operator
  */
 
@@ -25,7 +25,7 @@ export default function ShardFailuresWidget() {
   const deviationEvent = usePolydataEvent(POLYDATA_EVENTS.DEVIATION_SELECT);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.telemetry', {
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.telemetry', {
     filter: { metric: 'polydata.shard.failure_total' },
   });
 

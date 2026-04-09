@@ -9,7 +9,7 @@
  *   Listens: DEVIATION_SELECT (highlights affected provider)
  *            FILTER_RESET (clears selection)
  *
- * Lex stream: polylabs.data.telemetry
+ * Lex stream: polyqlabs.data.telemetry
  * Required roles: polydata-viewer, polydata-operator
  */
 
@@ -34,7 +34,7 @@ export default function ScatterHealthWidget() {
   const deviationEvent = usePolydataEvent(POLYDATA_EVENTS.DEVIATION_SELECT);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.telemetry', {
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.telemetry', {
     filter: { metric: 'polydata.scatter.*' },
   });
 

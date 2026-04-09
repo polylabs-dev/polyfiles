@@ -9,7 +9,7 @@
  *   Listens: CLASSIFICATION_FILTER (highlights matching tier)
  *            FILTER_RESET (clears highlight)
  *
- * Lex stream: polylabs.data.capacity
+ * Lex stream: polyqlabs.data.capacity
  * Required role: polydata-operator
  */
 
@@ -24,7 +24,7 @@ export default function CapacityForecastWidget() {
   const classFilter = usePolydataEvent(POLYDATA_EVENTS.CLASSIFICATION_FILTER);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.capacity');
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.capacity');
 
   const data = fixture ?? liveData;
 

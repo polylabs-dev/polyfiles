@@ -1,13 +1,13 @@
 // PolyFiles Dedup — Content-addressable deduplication via BLAKE3 hash
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/dedup
+//   esn/global/org/polyqlabs/files/dedup
 //   Content-addressable dedup using BLAKE3 hashes. Scatter-aware: dedup
 //   checks run across distributed nodes to find existing copies before
 //   creating new shards. Reduces storage by detecting byte-identical
 //   content across users (without revealing content or ownership).
 
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ data ContentHash : files v1 {
     computed_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/dedup
+    govern lex global/org/polyqlabs/files/dedup
     cortex {
         redact [hash]
         infer on_write
@@ -42,7 +42,7 @@ data DedupResult : files v1 {
     checked_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/dedup
+    govern lex global/org/polyqlabs/files/dedup
     cortex {
         redact [content_hash, existing_file_id]
         infer on_write
@@ -60,7 +60,7 @@ data DedupEntry : files v1 {
     last_seen_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/dedup
+    govern lex global/org/polyqlabs/files/dedup
     cortex {
         redact [content_hash, owner_id_hash]
         infer on_write
@@ -76,7 +76,7 @@ data MergeResult : files v1 {
     merged_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/dedup
+    govern lex global/org/polyqlabs/files/dedup
     cortex {
         redact [content_hash]
         infer on_write
@@ -93,7 +93,7 @@ data DedupStats : files v1 {
     computed_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/dedup
+    govern lex global/org/polyqlabs/files/dedup
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -103,7 +103,7 @@ data DedupStats : files v1 {
 
 stream dedup_events: event<DedupResult>
     | throttle 500/s burst 1000
-    | topic "polylabs.files.dedup.{content_hash}"
+    | topic "polyqlabs.files.dedup.{content_hash}"
     | retention policy_based
     | hash_chain true
 
@@ -111,7 +111,7 @@ stream dedup_events: event<DedupResult>
 
 circuit compute_content_hash(data: bytes, chunk_index: u32) -> ContentHash
     profile poly_framework_standard
-    lex global/org/polylabs/files/dedup
+    lex global/org/polyqlabs/files/dedup
     @precision C
     @observe metrics: [hashes_computed, bytes_hashed]
     monitor "hash_throughput" { bytes_per_sec > 100_000_000 }
@@ -137,7 +137,7 @@ circuit check_dedup(
 ) -> DedupResult
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/dedup
+    lex global/org/polyqlabs/files/dedup
     @precision C
     @observe metrics: [dedup_checks, dedup_hits, dedup_misses, savings_bytes_total]
     monitor "dedup_hit_rate" { dedup_hits / dedup_checks > 0.1 }
@@ -217,7 +217,7 @@ circuit register_content(
 ) -> DedupEntry
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/dedup
+    lex global/org/polyqlabs/files/dedup
     @precision C
     @observe metrics: [dedup_registrations, unique_content_count]
     monitor "registration_latency" { registration_time_ms < 10 }
@@ -250,7 +250,7 @@ circuit merge_dedup(
 ) -> MergeResult
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/dedup
+    lex global/org/polyqlabs/files/dedup
     @precision C
     @observe metrics: [dedup_merges, merged_references, merge_savings_bytes]
     monitor "merge_latency" { merge_time_ms < 50 }
@@ -308,7 +308,7 @@ circuit merge_dedup(
 circuit get_dedup_stats() -> DedupStats
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/dedup
+    lex global/org/polyqlabs/files/dedup
     @precision C
     @observe metrics: [stats_queries]
     invariant "stats_consistent" { total_files >= unique_files }
@@ -349,7 +349,7 @@ circuit get_dedup_stats() -> DedupStats
 
 test golden "compute_blake3_content_hash" {
     input {
-        data: bytes("Hello, Poly Files dedup test content!")
+        data: bytes("Hello, Q Files dedup test content!")
         chunk_index: 0
     }
     assert {

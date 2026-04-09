@@ -2,7 +2,7 @@
  * Poly Data Console Widgets
  *
  * Registers all Poly Data widgets with the eStream Console widget system.
- * Widgets subscribe to polylabs.data.* lex streams via WidgetDataGateway
+ * Widgets subscribe to polyqlabs.data.* lex streams via WidgetDataGateway
  * with RBAC enforcement.
  *
  * Cross-Widget Communication (Widget Event Bus):
@@ -30,7 +30,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-viewer', 'polydata-operator'],
-  lexStreams: ['polylabs.data.telemetry/**'],
+  lexStreams: ['polyqlabs.data.telemetry/**'],
 });
 
 registerWidget({
@@ -41,7 +41,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-viewer', 'polydata-operator'],
-  lexStreams: ['polylabs.data.telemetry/**'],
+  lexStreams: ['polyqlabs.data.telemetry/**'],
 });
 
 registerWidget({
@@ -52,7 +52,7 @@ registerWidget({
   defaultSize: { cols: 4, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-viewer', 'polydata-operator'],
-  lexStreams: ['polylabs.data.telemetry/**'],
+  lexStreams: ['polyqlabs.data.telemetry/**'],
 });
 
 registerWidget({
@@ -63,7 +63,7 @@ registerWidget({
   defaultSize: { cols: 12, rows: 4 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.metrics.deviations/**'],
+  lexStreams: ['polyqlabs.data.metrics.deviations/**'],
 });
 
 registerWidget({
@@ -74,7 +74,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.telemetry/**'],
+  lexStreams: ['polyqlabs.data.telemetry/**'],
 });
 
 registerWidget({
@@ -85,7 +85,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.capacity/**'],
+  lexStreams: ['polyqlabs.data.capacity/**'],
 });
 
 // ─── ESLM Management Widgets (Governance) ────────────────────────────────────
@@ -98,7 +98,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.eslm.classification/**'],
+  lexStreams: ['polyqlabs.data.eslm.classification/**'],
 });
 
 registerWidget({
@@ -109,7 +109,7 @@ registerWidget({
   defaultSize: { cols: 12, rows: 4 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.eslm.classification/**'],
+  lexStreams: ['polyqlabs.data.eslm.classification/**'],
 });
 
 registerWidget({
@@ -120,7 +120,7 @@ registerWidget({
   defaultSize: { cols: 6, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.eslm.classification/**'],
+  lexStreams: ['polyqlabs.data.eslm.classification/**'],
 });
 
 registerWidget({
@@ -131,7 +131,7 @@ registerWidget({
   defaultSize: { cols: 12, rows: 4 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-operator'],
-  lexStreams: ['polylabs.data.eslm.recommendation/**'],
+  lexStreams: ['polyqlabs.data.eslm.recommendation/**'],
 });
 
 registerWidget({
@@ -142,5 +142,5 @@ registerWidget({
   defaultSize: { cols: 12, rows: 3 },
   dataSource: 'subscription',
   requiredRoles: ['polydata-compliance', 'polydata-operator'],
-  lexStreams: ['polylabs.data.eslm.sanitization/**'],
+  lexStreams: ['polyqlabs.data.eslm.sanitization/**'],
 });

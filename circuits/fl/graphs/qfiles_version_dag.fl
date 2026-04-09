@@ -1,7 +1,7 @@
-// Poly Files Version DAG — Merkle-linked version history for files
+// Q Files Version DAG — Merkle-linked version history for files
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files
+//   esn/global/org/polyqlabs/files
 //     └── sub_lex version fan_in  ← per-file version chain; proofs fan up
 //
 // Each version is an ML-DSA-87 signed node in a DAG. Parent edges form
@@ -10,8 +10,8 @@
 // Stratum storage binds to merkle_csr for content integrity. Cortex
 // governs field visibility and triggers anomaly detection on writes.
 
-import polykit_identity from "../../../polykit/circuits/fl/polykit_identity.fl"
-import polykit_metering from "../../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_identity from "../../../qkit/circuits/fl/qkit_identity.fl"
+import qkit_metering from "../../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Stratum Data Declarations ──────────────────────────────────────
 
@@ -31,7 +31,7 @@ data VersionNode : files v1 {
     created_ms: u64,
 }
     store dag
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         obfuscate [author_id]
         redact [signature, author_pk]
@@ -55,7 +55,7 @@ data ParentEdge : files v1 {
     merge_strategy: MergeStrategy,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -81,7 +81,7 @@ data AncestorResult : files v1 {
     proof: MerkleProof,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -93,7 +93,7 @@ data DescendantResult : files v1 {
     depth: u64,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -107,7 +107,7 @@ data CommonAncestorResult : files v1 {
     proof_b: MerkleProof,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -121,7 +121,7 @@ data MergeCandidate : files v1 {
     conflict_detected: bool,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -135,7 +135,7 @@ data VersionProof : files v1 {
     author_verified: bool,
 }
     store kv
-    govern lex global/org/polylabs/files
+    govern lex global/org/polyqlabs/files
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -219,7 +219,7 @@ series version_series: version_history
 
 stream version_events: event<VersionNode>
     | throttle 500/s burst 1000
-    | topic "polylabs.files.{author_id}.version.{file_id}"
+    | topic "polyqlabs.files.{author_id}.version.{file_id}"
     | retention policy_based
     | hash_chain true
 
@@ -231,7 +231,7 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex version fan_in
     }
     meters [compute_cycles, storage]
@@ -244,7 +244,7 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     property liveness "version_eventually_stored" { eventually(eslite_query("versions", version_id) != null) }
     wasm_abi [eslite_insert, eslite_query, stream_emit, now]
 {
-    let author_derived = polykit_identity::derive_user_id(author_pk)
+    let author_derived = qkit_identity::derive_user_id(author_pk)
     if author_derived != author_id { return error("author_identity_mismatch") }
 
     let ts = now()
@@ -272,7 +272,7 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     let merkle_root = merkle_tree_root(merkle_leaves)
 
     let sign_payload = version_id ++ file_id ++ manifest_hash ++ merkle_root ++ u64_to_bytes(ts)
-    let signature = polykit_identity::sign_message(author_sk, sign_payload)
+    let signature = qkit_identity::sign_message(author_sk, sign_payload)
 
     let node = VersionNode {
         version_id: version_id,
@@ -312,7 +312,7 @@ circuit create_version(file_id: FileId, author_id: UserId, author_pk: bytes(2592
 
     emit(version_events, node)
 
-    polykit_metering::record_usage(author_id, "version", {
+    qkit_metering::record_usage(author_id, "version", {
         executions: 1, hashes: u64(parent_count) + 2, bandwidth: 0,
         storage: u64(len(node)), observables: 1, proofs: 1,
         circuits: 1, mpc_sessions: 0,
@@ -327,7 +327,7 @@ circuit get_ancestors(version_id: VersionId, max_depth: u64) -> AncestorResult
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [ancestor_queries, traversal_depth, nodes_visited]
     monitor "traversal_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
@@ -376,7 +376,7 @@ circuit get_descendants(version_id: VersionId, max_depth: u64) -> DescendantResu
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [descendant_queries, traversal_depth]
     monitor "descendant_latency" { traversal_time_ms < 200 }
     invariant "max_depth_bounded" { max_depth <= 1000 }
@@ -418,7 +418,7 @@ circuit find_common_ancestor(version_a: VersionId, version_b: VersionId) -> Comm
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [common_ancestor_queries, lca_depth, lca_latency_ms]
     monitor "lca_latency" { lca_latency_ms < 500 }
     invariant "distinct_versions" { version_a != version_b }
@@ -480,7 +480,7 @@ circuit merge_versions(file_id: FileId, author_id: UserId, author_pk: bytes(2592
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files {
+    lex global/org/polyqlabs/files {
         sub_lex version fan_in
     }
     meters [compute_cycles, storage]
@@ -517,7 +517,7 @@ circuit prove_version(version_id: VersionId) -> VersionProof
     @attested true
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files
+    lex global/org/polyqlabs/files
     @observe metrics: [proofs_generated, proof_verifications]
     monitor "proof_latency" { proof_time_ms < 50 }
     invariant "version_exists" { node != null }
@@ -527,7 +527,7 @@ circuit prove_version(version_id: VersionId) -> VersionProof
     let node = eslite_query("versions", version_id)
     if node == null { return error("version_not_found") }
 
-    let sig_valid = polykit_identity::verify_signature(
+    let sig_valid = qkit_identity::verify_signature(
         node.author_pk,
         node.version_id ++ node.file_id ++ node.manifest_hash ++ node.merkle_root ++ u64_to_bytes(node.created_ms),
         node.signature
@@ -556,7 +556,7 @@ circuit prove_version(version_id: VersionId) -> VersionProof
 test golden "create_initial_version" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let author_id = polykit_identity::derive_user_id(pk)
+        let author_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("versioned-file-001"))
         let manifest_hash = sha3_256(bytes("manifest-v1"))
 
@@ -582,7 +582,7 @@ test golden "create_initial_version" {
 test golden "create_linear_version_chain" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let author_id = polykit_identity::derive_user_id(pk)
+        let author_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("chain-file"))
 
         let v1 = create_version(
@@ -610,7 +610,7 @@ test golden "create_linear_version_chain" {
 test golden "merge_two_branches" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let author_id = polykit_identity::derive_user_id(pk)
+        let author_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("merge-file"))
 
         let base = create_version(
@@ -652,7 +652,7 @@ test golden "merge_two_branches" {
 test golden "prove_version_integrity" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let author_id = polykit_identity::derive_user_id(pk)
+        let author_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("proof-file"))
 
         let v1 = create_version(
@@ -675,7 +675,7 @@ test golden "prove_version_integrity" {
 test golden "get_ancestors_linear" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let author_id = polykit_identity::derive_user_id(pk)
+        let author_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("ancestor-file"))
 
         let v1 = create_version(file_id, author_id, pk, sk, sha3_256(bytes("m1")), [bytes(32){0}, bytes(32){0}, bytes(32){0}, bytes(32){0}], 0, 100, "v1")

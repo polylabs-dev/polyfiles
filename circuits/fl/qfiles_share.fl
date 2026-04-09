@@ -1,7 +1,7 @@
-// Poly Files Share — ACL-based folder sharing and ephemeral link distribution
+// Q Files Share — ACL-based folder sharing and ephemeral link distribution
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/share
+//   esn/global/org/polyqlabs/files/share
 //     └── sub_lex acl fan_in     ← per-share ACL; only status/metrics fan up
 //     └── sub_lex ephemeral fan_in ← ephemeral links; auto-expire, no content fan-up
 //
@@ -10,9 +10,9 @@
 // ownership during accept_share via signature challenge. Ephemeral links
 // use a time-bounded HMAC token with no DID requirement.
 
-import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
-import polykit_governance from "../../polykit/circuits/fl/polykit_governance.fl"
+import qkit_identity from "../../qkit/circuits/fl/qkit_identity.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
+import qkit_governance from "../../qkit/circuits/fl/qkit_governance.fl"
 
 type ShareId = bytes(32)
 type FileId = bytes(32)
@@ -42,7 +42,7 @@ data ShareGrant : files v1 {
     expires_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/share
+    govern lex global/org/polyqlabs/files/share
     cortex {
         redact [owner_signature, owner_pk, owner_id, recipient_id]
         infer on_write
@@ -60,7 +60,7 @@ data EphemeralLink : files v1 {
     expires_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/share
+    govern lex global/org/polyqlabs/files/share
     cortex {
         redact [hmac_token, owner_id]
         infer on_write
@@ -74,7 +74,7 @@ data ShareAcceptance : files v1 {
     accepted_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/share
+    govern lex global/org/polyqlabs/files/share
     cortex {
         redact [recipient_signature, recipient_id]
         infer on_write
@@ -89,7 +89,7 @@ data ShareStatus : files v1 {
     revoked: bool,
 }
     store kv
-    govern lex global/org/polylabs/files/share
+    govern lex global/org/polyqlabs/files/share
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -126,25 +126,25 @@ state_machine share_lifecycle {
 
 stream acl_events: event<ShareGrant>
     | throttle 200/s burst 500
-    | topic "polylabs.files.{user_id}.share.acl"
+    | topic "polyqlabs.files.{user_id}.share.acl"
     | retention permanent
     | hash_chain true
 
 stream incoming_events: event<ShareGrant>
     | throttle 200/s burst 500
-    | topic "polylabs.files.{recipient_id}.share.incoming"
+    | topic "polyqlabs.files.{recipient_id}.share.incoming"
     | retention policy_based
 
 stream ephemeral_events: event<EphemeralLink>
     | throttle 100/s burst 200
-    | topic "polylabs.files.{user_id}.share.ephemeral"
+    | topic "polyqlabs.files.{user_id}.share.ephemeral"
     | retention ephemeral
 
 // --- Create a new share grant (owner-initiated) ---
 circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(4896), recipient_id: UserId, target: ShareTarget, permission: SharePermission, ttl_ms: u64) -> ShareGrant
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/share {
+    lex global/org/polyqlabs/files/share {
         sub_lex acl fan_in
     }
     @precision C
@@ -156,7 +156,7 @@ circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(48
     property safety "share_signed_by_owner" { verify(owner_signature, owner_pk) == true }
     wasm_abi [eslite_insert, stream_emit, now]
 {
-    let owner_derived = polykit_identity::derive_user_id(owner_pk)
+    let owner_derived = qkit_identity::derive_user_id(owner_pk)
     if owner_derived != owner_id { return error("owner_identity_mismatch") }
 
     let ts = now()
@@ -168,7 +168,7 @@ circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(48
     }
 
     let payload = share_id ++ recipient_id ++ target_bytes ++ u64_to_bytes(ts)
-    let signature = polykit_identity::sign_message(owner_sk, payload)
+    let signature = qkit_identity::sign_message(owner_sk, payload)
 
     let grant = ShareGrant {
         share_id: share_id,
@@ -188,7 +188,7 @@ circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(48
     emit(acl_events, grant)
     emit(incoming_events, grant)
 
-    polykit_metering::record_usage(owner_id, "share", {
+    qkit_metering::record_usage(owner_id, "share", {
         executions: 0, hashes: 1, bandwidth: 0, storage: 0,
         observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -200,14 +200,14 @@ circuit create_share(owner_id: UserId, owner_pk: bytes(2592), owner_sk: bytes(48
 circuit validate_share(grant: ShareGrant) -> bool
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/share
+    lex global/org/polyqlabs/files/share
     @precision C
     @observe metrics: [share_validations, validation_failures, signature_checks]
     monitor "validation_accuracy" { validation_failures / share_validations < 0.01 }
     invariant "signature_present" { len(grant.owner_signature) == 4627 }
     property safety "expired_shares_rejected" { now() > grant.expires_ms implies result == false }
 {
-    let owner_derived = polykit_identity::derive_user_id(grant.owner_pk)
+    let owner_derived = qkit_identity::derive_user_id(grant.owner_pk)
     if owner_derived != grant.owner_id { return false }
 
     let target_bytes = match grant.target {
@@ -215,7 +215,7 @@ circuit validate_share(grant: ShareGrant) -> bool
         ShareTarget::Folder { folder_id } => folder_id,
     }
     let payload = grant.share_id ++ grant.recipient_id ++ target_bytes ++ u64_to_bytes(grant.created_ms)
-    let sig_valid = polykit_identity::verify_signature(
+    let sig_valid = qkit_identity::verify_signature(
         grant.owner_pk, payload, grant.owner_signature
     )
     if !sig_valid { return false }
@@ -234,7 +234,7 @@ circuit validate_share(grant: ShareGrant) -> bool
 circuit revoke_share(share_id: ShareId, owner_id: UserId, owner_pk: bytes(2592), owner_sig: bytes(4627)) -> bool
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/share
+    lex global/org/polyqlabs/files/share
     @precision C
     @observe metrics: [shares_revoked, revoke_latency_ms]
     monitor "revoke_success" { shares_revoked > 0 }
@@ -242,10 +242,10 @@ circuit revoke_share(share_id: ShareId, owner_id: UserId, owner_pk: bytes(2592),
     property safety "only_owner_can_revoke" { grant.owner_id == owner_id }
     wasm_abi [eslite_query, eslite_insert, now]
 {
-    let derived = polykit_identity::derive_user_id(owner_pk)
+    let derived = qkit_identity::derive_user_id(owner_pk)
     if derived != owner_id { return false }
 
-    let sig_valid = polykit_identity::verify_signature(owner_pk, share_id, owner_sig)
+    let sig_valid = qkit_identity::verify_signature(owner_pk, share_id, owner_sig)
     if !sig_valid { return false }
 
     let grant = eslite_query("shares", share_id)
@@ -262,7 +262,7 @@ circuit revoke_share(share_id: ShareId, owner_id: UserId, owner_pk: bytes(2592),
 circuit create_ephemeral_link(file_id: FileId, owner_id: UserId, owner_sk: bytes(4896), max_downloads: u32, ttl_ms: u64) -> EphemeralLink
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/share {
+    lex global/org/polyqlabs/files/share {
         sub_lex ephemeral fan_in
     }
     @precision C
@@ -298,14 +298,14 @@ circuit create_ephemeral_link(file_id: FileId, owner_id: UserId, owner_sk: bytes
 circuit accept_share(share_id: ShareId, recipient_id: UserId, recipient_pk: bytes(2592), recipient_sk: bytes(4896)) -> ShareAcceptance
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/share
+    lex global/org/polyqlabs/files/share
     @precision C
     @observe metrics: [shares_accepted, accept_latency_ms]
     invariant "recipient_matches" { grant.recipient_id == recipient_derived }
     property safety "recipient_authenticated" { recipient_derived == recipient_id }
     wasm_abi [eslite_query, eslite_insert, now]
 {
-    let recipient_derived = polykit_identity::derive_user_id(recipient_pk)
+    let recipient_derived = qkit_identity::derive_user_id(recipient_pk)
     if recipient_derived != recipient_id { return error("identity_mismatch") }
 
     let grant = eslite_query("shares", share_id)
@@ -316,7 +316,7 @@ circuit accept_share(share_id: ShareId, recipient_id: UserId, recipient_pk: byte
     if grant.expires_ms > 0 && ts > grant.expires_ms { return error("share_expired") }
 
     let challenge = sha3_256(share_id ++ recipient_id ++ u64_to_bytes(ts))
-    let sig = polykit_identity::sign_message(recipient_sk, challenge)
+    let sig = qkit_identity::sign_message(recipient_sk, challenge)
 
     eslite_insert("shares", share_id, { ...grant, accepted: true, accepted_ms: ts })
 
@@ -333,9 +333,9 @@ circuit accept_share(share_id: ShareId, recipient_id: UserId, recipient_pk: byte
 test golden "create_and_validate_share" {
     steps {
         let (owner_pk, owner_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let owner_id = qkit_identity::derive_user_id(owner_pk)
         let (recipient_pk, _) = mldsa_keygen()
-        let recipient_id = polykit_identity::derive_user_id(recipient_pk)
+        let recipient_id = qkit_identity::derive_user_id(recipient_pk)
         let file_id = sha3_256(bytes("shared-file-001"))
 
         let grant = create_share(
@@ -359,9 +359,9 @@ test golden "create_and_validate_share" {
 test golden "revoke_share_by_owner" {
     steps {
         let (owner_pk, owner_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let owner_id = qkit_identity::derive_user_id(owner_pk)
         let (recipient_pk, _) = mldsa_keygen()
-        let recipient_id = polykit_identity::derive_user_id(recipient_pk)
+        let recipient_id = qkit_identity::derive_user_id(recipient_pk)
 
         let grant = create_share(
             owner_id, owner_pk, owner_sk,
@@ -370,7 +370,7 @@ test golden "revoke_share_by_owner" {
             SharePermission::ReadWrite,
             0,
         )
-        let revoke_sig = polykit_identity::sign_message(owner_sk, grant.share_id)
+        let revoke_sig = qkit_identity::sign_message(owner_sk, grant.share_id)
         let revoked = revoke_share(grant.share_id, owner_id, owner_pk, revoke_sig)
     }
     assert {
@@ -381,7 +381,7 @@ test golden "revoke_share_by_owner" {
 test golden "create_ephemeral_link" {
     steps {
         let (owner_pk, owner_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(owner_pk)
+        let owner_id = qkit_identity::derive_user_id(owner_pk)
         let file_id = sha3_256(bytes("ephemeral-file"))
 
         let link = create_ephemeral_link(file_id, owner_id, owner_sk, 10, 3600000)

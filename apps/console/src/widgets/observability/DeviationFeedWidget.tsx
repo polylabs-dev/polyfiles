@@ -11,7 +11,7 @@
  *   Listens: CLASSIFICATION_FILTER (filters deviations by classification context)
  *            FILTER_RESET (clears selection)
  *
- * Lex stream: polylabs.data.metrics.deviations
+ * Lex stream: polyqlabs.data.metrics.deviations
  * Required role: polydata-operator
  */
 
@@ -39,7 +39,7 @@ export default function DeviationFeedWidget() {
   const circuitFilter = usePolydataEvent(POLYDATA_EVENTS.CIRCUIT_FILTER);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.metrics.deviations');
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.metrics.deviations');
 
   const data = fixture ?? liveData;
 

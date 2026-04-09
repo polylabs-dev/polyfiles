@@ -1,12 +1,12 @@
-# Poly Files
+# Q Files
 
 Scatter-distributed encrypted storage built on eStream v0.22.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
-Poly Files is a scatter-distributed encrypted storage platform where every file is PQ-encrypted on-device, erasure-coded, and distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention.
+Q Files is a scatter-distributed encrypted storage platform where every file is PQ-encrypted on-device, erasure-coded, and distributed across multiple providers and jurisdictions. Classification tags control scatter policy, offline access, and retention.
 
-> **Note**: Git/version-control functionality has been split into a separate product: **Poly Git** (`polygit/`). Poly Files focuses on file storage, collaboration, and enterprise document management.
+> **Note**: Git/version-control functionality has been split into a separate product: **Q Git** (`qgit/`). Q Files focuses on file storage, collaboration, and enterprise document management.
 
 ## Architecture
 

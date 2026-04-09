@@ -8,7 +8,7 @@
  *   Emits: CLASSIFICATION_FILTER (on tag bar click)
  *   Listens: FILTER_RESET (clears selection)
  *
- * Lex stream: polylabs.data.telemetry
+ * Lex stream: polyqlabs.data.telemetry
  * Required roles: polydata-viewer, polydata-operator
  */
 
@@ -23,7 +23,7 @@ export default function ClassificationDistWidget() {
   const emitClassFilter = useEmitPolydataEvent(POLYDATA_EVENTS.CLASSIFICATION_FILTER);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.telemetry', {
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.telemetry', {
     filter: { metric: 'polydata.classify.*' },
   });
 

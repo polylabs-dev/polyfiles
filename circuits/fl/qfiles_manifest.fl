@@ -1,7 +1,7 @@
 // PolyFiles Manifest — Manifest construction and ML-DSA-87 signing
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/manifest
+//   esn/global/org/polyqlabs/files/manifest
 //   Manifests bind chunk hashes, shard maps, classification, and wrapped keys
 //   into a single signed document. Signed with SPARK-derived ML-DSA-87 key.
 //   Version entries form a hash chain for file history.
@@ -10,8 +10,8 @@
 //   file_id, version, chunk_hashes[], shard_map, classification,
 //   wrapped_file_key, timestamp, metadata → SHA3-256 → ML-DSA-87 sign
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 type FileId = bytes(32)
 type VersionHash = bytes(32)
@@ -23,7 +23,7 @@ data ShardLocation : files v1 {
     cas_address: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [cas_address]
         infer on_write
@@ -37,7 +37,7 @@ data ShardMap : files v1 {
     n: u8,
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [locations]
         infer on_write
@@ -50,7 +50,7 @@ data WrappedFileKey : files v1 {
     key_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [kem_ciphertext, encrypted_file_key]
         infer on_write
@@ -65,7 +65,7 @@ data ManifestMetadata : files v1 {
     modified_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [filename]
         infer on_write
@@ -83,7 +83,7 @@ data Manifest : files v1 {
     manifest_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [wrapped_file_key, file_id]
         infer on_write
@@ -97,7 +97,7 @@ data SignedManifest : files v1 {
     signed_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [signature, signer_public_key]
         infer on_write
@@ -112,7 +112,7 @@ data VersionEntry : files v1 {
     action: string,
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [signed_manifest]
         infer on_write
@@ -126,7 +126,7 @@ data ManifestVerification : files v1 {
     verified_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/manifest
+    govern lex global/org/polyqlabs/files/manifest
     cortex {
         redact [signer_key_hash]
         infer on_write
@@ -144,7 +144,7 @@ circuit build_manifest(
     metadata: ManifestMetadata,
 ) -> Manifest
     profile poly_framework_standard
-    lex global/org/polylabs/files/manifest
+    lex global/org/polyqlabs/files/manifest
     @precision C
     @observe metrics: [manifests_built, chunks_per_manifest, shards_per_manifest]
     monitor "manifest_build_latency" { build_time_ms < 50 }
@@ -189,7 +189,7 @@ circuit sign_manifest(
     signer_public_key: bytes(2592),
 ) -> SignedManifest
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/manifest
+    lex global/org/polyqlabs/files/manifest
     @precision C
     constant_time true
     @observe metrics: [manifest_signs, mldsa_sign_ops]
@@ -201,7 +201,7 @@ circuit sign_manifest(
 {
     let sign_payload = bytes_new()
     bytes_append(sign_payload, manifest.manifest_hash)
-    bytes_append(sign_payload, string_to_bytes("polyfiles-manifest-v1"))
+    bytes_append(sign_payload, string_to_bytes("qfiles-manifest-v1"))
     bytes_append(sign_payload, u64_to_be_bytes(manifest.version))
     let signature = mldsa_sign(spark_signing_key, sign_payload)
     let ts = now()
@@ -216,7 +216,7 @@ circuit sign_manifest(
 // --- Verify manifest ML-DSA-87 signature ---
 circuit verify_manifest(signed_manifest: SignedManifest) -> ManifestVerification
     profile poly_framework_standard
-    lex global/org/polylabs/files/manifest
+    lex global/org/polyqlabs/files/manifest
     @precision C
     @observe metrics: [manifest_verifications, verification_failures]
     monitor "verify_failure_rate" { verification_failures / manifest_verifications < 0.001 }
@@ -226,7 +226,7 @@ circuit verify_manifest(signed_manifest: SignedManifest) -> ManifestVerification
 {
     let verify_payload = bytes_new()
     bytes_append(verify_payload, signed_manifest.manifest.manifest_hash)
-    bytes_append(verify_payload, string_to_bytes("polyfiles-manifest-v1"))
+    bytes_append(verify_payload, string_to_bytes("qfiles-manifest-v1"))
     bytes_append(verify_payload, u64_to_be_bytes(signed_manifest.manifest.version))
 
     let sig_valid = mldsa_verify(
@@ -254,7 +254,7 @@ circuit build_version_entry(
     action: string,
 ) -> VersionEntry
     profile poly_framework_standard
-    lex global/org/polylabs/files/manifest
+    lex global/org/polyqlabs/files/manifest
     @precision C
     @observe metrics: [version_entries_created, version_chain_depth]
     invariant "valid_action" {
@@ -396,7 +396,7 @@ golden_test "sha3_256_manifest_hashing" {
 
 golden_test "sha3_256_manifest_payload" {
     function: "sha3_256"
-    input: bytes("polyfiles-manifest-v1")
+    input: bytes("qfiles-manifest-v1")
     expected: hex("c9b8a7603c7f8e1d5a2b4e6f0813927d4c5a6b7e8f9012d3e4a5b6c7d8e9f0a1")
     note: "domain-specific context hash for manifest signing"
 }

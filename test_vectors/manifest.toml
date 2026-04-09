@@ -1,8 +1,8 @@
 [test_suite]
-name = "polyfiles golden tests"
-circuit = "polyfiles_circuits"
+name = "qfiles golden tests"
+circuit = "qfiles_circuits"
 version = "0.1.0"
 
 [[vectors]]
-file = "polyfiles.esz"
+file = "qfiles.esz"
 tags = ["golden", "happy-path", "crypto", "telemetry-isolation"]

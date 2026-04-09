@@ -56,11 +56,11 @@ const now = Date.now();
 
 export const deviationFeedFixture = {
   deviations: [
-    { timestamp: now - 120_000, metric: 'polydata.scatter.duration_ns', circuit: 'poly-data-storage-router', zScore: 3.2, observed: 28_400_000, baseline: 12_500_000, severity: 'anomaly' as const },
-    { timestamp: now - 340_000, metric: 'polydata.encrypt.chunk_ns', circuit: 'poly-data-encrypt', zScore: 2.1, observed: 2_100_000, baseline: 1_240_000, severity: 'deviation' as const },
-    { timestamp: now - 560_000, metric: 'polydata.upload.latency_ns', circuit: 'poly-data-manifest', zScore: 2.8, observed: 24_000_000, baseline: 17_560_000, severity: 'deviation' as const },
-    { timestamp: now - 900_000, metric: 'polydata.shard.failure_total', circuit: 'poly-data-storage-router', zScore: 4.1, observed: 12, baseline: 1, severity: 'anomaly' as const },
-    { timestamp: now - 1_200_000, metric: 'polydata.downloads_total', circuit: 'poly-data-storage-router', zScore: 1.9, observed: 450, baseline: 280, severity: 'deviation' as const },
+    { timestamp: now - 120_000, metric: 'polydata.scatter.duration_ns', circuit: 'q-data-storage-router', zScore: 3.2, observed: 28_400_000, baseline: 12_500_000, severity: 'anomaly' as const },
+    { timestamp: now - 340_000, metric: 'polydata.encrypt.chunk_ns', circuit: 'q-data-encrypt', zScore: 2.1, observed: 2_100_000, baseline: 1_240_000, severity: 'deviation' as const },
+    { timestamp: now - 560_000, metric: 'polydata.upload.latency_ns', circuit: 'q-data-manifest', zScore: 2.8, observed: 24_000_000, baseline: 17_560_000, severity: 'deviation' as const },
+    { timestamp: now - 900_000, metric: 'polydata.shard.failure_total', circuit: 'q-data-storage-router', zScore: 4.1, observed: 12, baseline: 1, severity: 'anomaly' as const },
+    { timestamp: now - 1_200_000, metric: 'polydata.downloads_total', circuit: 'q-data-storage-router', zScore: 1.9, observed: 450, baseline: 280, severity: 'deviation' as const },
   ],
 };
 
@@ -166,9 +166,9 @@ export const esnAiRecommendationsFixture = {
     {
       id: 'rec-001',
       category: 'circuit_optimization' as const,
-      title: 'Reduce poly-data-encrypt chunk size for small files',
+      title: 'Reduce q-data-encrypt chunk size for small files',
       description: 'Files under 64KB are using the default 256KB chunk size, causing unnecessary overhead. Recommend adaptive chunk sizing based on file size.',
-      circuit: 'poly-data-encrypt',
+      circuit: 'q-data-encrypt',
       metric: 'polydata.encrypt.chunk_ns',
       impact: 'medium' as const,
       timestamp: now - 3_600_000,
@@ -186,7 +186,7 @@ export const esnAiRecommendationsFixture = {
       category: 'anomaly_correlation' as const,
       title: 'Azure westeurope shard failures correlate with latency spike',
       description: 'Shard failures on Azure westeurope region correlate with scatter duration anomaly detected 2 hours ago. Potential regional degradation.',
-      circuit: 'poly-data-storage-router',
+      circuit: 'q-data-storage-router',
       metric: 'polydata.shard.failure_total',
       impact: 'high' as const,
       timestamp: now - 1_800_000,

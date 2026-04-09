@@ -1,7 +1,7 @@
 // PolyFiles ESLM Classify — ESLM-powered auto-classification with PII sanitization
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/eslm
+//   esn/global/org/polyqlabs/files/eslm
 //   On-device ESLM analyzes file content samples (first 4KB) to suggest
 //   classification tags with confidence scores. Content never leaves WASM.
 //
@@ -17,8 +17,8 @@
 //
 // Compliance: HIPAA, PCI-DSS, GDPR, SOC2
 
-import polykit_metering
-import polykit_governance
+import qkit_metering
+import qkit_governance
 
 type Classification = enum {
     Public,
@@ -43,7 +43,7 @@ data ClassificationSuggestion : files v1 {
     reasoning: string,
 }
     store kv
-    govern lex global/org/polylabs/files/eslm
+    govern lex global/org/polyqlabs/files/eslm
     cortex {
         redact [reasoning]
         infer on_write
@@ -55,7 +55,7 @@ data ClassificationAlternative : files v1 {
     confidence: f32,
 }
     store kv
-    govern lex global/org/polylabs/files/eslm
+    govern lex global/org/polyqlabs/files/eslm
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -69,7 +69,7 @@ data SanitizedContent : files v1 {
     compliance_flags: list<string>,
 }
     store kv
-    govern lex global/org/polylabs/files/eslm
+    govern lex global/org/polyqlabs/files/eslm
     cortex {
         redact [content, audit_hash]
         infer on_write
@@ -83,7 +83,7 @@ data PiiDetection : files v1 {
     placeholder: string,
 }
     store kv
-    govern lex global/org/polylabs/files/eslm
+    govern lex global/org/polyqlabs/files/eslm
     cortex {
         redact [start_offset, end_offset]
         infer on_write
@@ -100,7 +100,7 @@ data FeedbackRecord : files v1 {
     weight: f32,
 }
     store kv
-    govern lex global/org/polylabs/files/eslm
+    govern lex global/org/polyqlabs/files/eslm
     cortex {
         redact [reviewer_hash]
         infer on_write
@@ -121,7 +121,7 @@ circuit classify_content(
     file_path: string,
 ) -> ClassificationSuggestion
     profile poly_framework_standard
-    lex global/org/polylabs/files/eslm
+    lex global/org/polyqlabs/files/eslm
     @precision C
     @observe metrics: [eslm_classifications, confidence_distribution, auto_apply_count, manual_required_count]
     monitor "eslm_latency" { classify_time_ms < 200 }
@@ -183,7 +183,7 @@ circuit classify_content(
 // --- Classify based on filename patterns and path context ---
 circuit classify_filename(filename: string, path: string) -> ClassificationSuggestion
     profile poly_framework_standard
-    lex global/org/polylabs/files/eslm
+    lex global/org/polyqlabs/files/eslm
     @precision C
     @observe metrics: [filename_classifications]
     monitor "filename_classify_latency" { classify_time_ms < 10 }
@@ -235,7 +235,7 @@ circuit submit_human_feedback(
     reviewer_hash: bytes(32),
 ) -> FeedbackRecord
     profile poly_framework_standard
-    lex global/org/polylabs/files/eslm
+    lex global/org/polyqlabs/files/eslm
     @precision C
     @observe metrics: [feedback_submissions, correction_rate, feedback_weight_total]
     monitor "feedback_volume" { feedback_submissions > 0 }

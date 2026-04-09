@@ -12,7 +12,7 @@
  *   Listens: REVIEW_COMPLETED (refreshes feedback stats on new review)
  *            FILTER_RESET (clears highlights)
  *
- * Lex stream: polylabs.data.eslm.classification
+ * Lex stream: polyqlabs.data.eslm.classification
  * Required role: polydata-operator
  */
 
@@ -26,7 +26,7 @@ export default function EslmFeedbackWidget() {
   const reviewEvent = usePolydataEvent(POLYDATA_EVENTS.REVIEW_COMPLETED);
 
   const { data: liveData, status } = useStreamSubscription(
-    'polylabs.data.eslm.classification',
+    'polyqlabs.data.eslm.classification',
     { filter: { type: 'feedback_summary' } },
   );
 

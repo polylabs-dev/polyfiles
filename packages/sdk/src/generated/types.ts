@@ -5,42 +5,42 @@
  *   estream generate typescript --circuits circuits/ --output packages/sdk/src/generated/
  *
  * Source circuits:
- *   - poly-data-encrypt (polylabs.data.encrypt)
- *   - poly-data-chunk (polylabs.data.chunk)
- *   - poly-data-classify (polylabs.data.classify)
- *   - poly-data-manifest (polylabs.data.manifest)
- *   - poly-data-eslm-classify (polylabs.data.eslm.classify)
- *   - poly-data-storage-router (polylabs.data.router)
- *   - poly-data-share (polylabs.data.share)
- *   - poly-data-version (polylabs.data.version)
- *   - poly-data-metering (polylabs.data.metering)
+ *   - q-data-encrypt (polyqlabs.data.encrypt)
+ *   - q-data-chunk (polyqlabs.data.chunk)
+ *   - q-data-classify (polyqlabs.data.classify)
+ *   - q-data-manifest (polyqlabs.data.manifest)
+ *   - q-data-eslm-classify (polyqlabs.data.eslm.classify)
+ *   - q-data-storage-router (polyqlabs.data.router)
+ *   - q-data-share (polyqlabs.data.share)
+ *   - q-data-version (polyqlabs.data.version)
+ *   - q-data-metering (polyqlabs.data.metering)
  */
 
 // ─── Lex Topic Constants ─────────────────────────────────────────────────────
 
 export const LEX_TOPICS = {
-  UPLOAD: 'polylabs.data.{user_id}.upload',
-  DOWNLOAD: 'polylabs.data.{user_id}.download',
-  UPLOAD_CONFIRM: 'polylabs.data.{user_id}.upload.confirm',
-  SHARE_ACL: 'polylabs.data.{user_id}.share.acl',
-  SHARE_INCOMING: 'polylabs.data.{recipient_id}.share.incoming',
-  SHARE_EPHEMERAL: 'polylabs.data.{user_id}.share.ephemeral',
-  VERSION: 'polylabs.data.{user_id}.version.{file_id}',
-  METERING: 'polylabs.data.metering.{user_id}',
-  TELEMETRY: 'lex://estream/apps/polylabs.data/telemetry',
-  TELEMETRY_SLI: 'lex://estream/apps/polylabs.data/telemetry/sli',
-  BASELINE: 'lex://estream/apps/polylabs.data/metrics/baseline',
-  DEVIATIONS: 'lex://estream/apps/polylabs.data/metrics/deviations',
-  INCIDENTS: 'lex://estream/apps/polylabs.data/incidents',
-  TRENDS: 'lex://estream/apps/polylabs.data/metrics/trends',
-  SLA: 'lex://estream/apps/polylabs.data/sla',
-  CAPACITY: 'lex://estream/apps/polylabs.data/capacity',
-  ESLM_CLASSIFICATION: 'lex://estream/apps/polylabs.data/eslm/classification',
-  ESLM_RECOMMENDATION: 'lex://estream/apps/polylabs.data/eslm/recommendation',
-  ESLM_SANITIZATION: 'lex://estream/apps/polylabs.data/eslm/sanitization',
-  ESLM_CAPACITY: 'lex://estream/apps/polylabs.data/eslm/capacity',
-  ESLM_ANOMALY: 'lex://estream/apps/polylabs.data/eslm/anomaly',
-  ESLM_SECURITY: 'lex://estream/apps/polylabs.data/eslm/security',
+  UPLOAD: 'polyqlabs.data.{user_id}.upload',
+  DOWNLOAD: 'polyqlabs.data.{user_id}.download',
+  UPLOAD_CONFIRM: 'polyqlabs.data.{user_id}.upload.confirm',
+  SHARE_ACL: 'polyqlabs.data.{user_id}.share.acl',
+  SHARE_INCOMING: 'polyqlabs.data.{recipient_id}.share.incoming',
+  SHARE_EPHEMERAL: 'polyqlabs.data.{user_id}.share.ephemeral',
+  VERSION: 'polyqlabs.data.{user_id}.version.{file_id}',
+  METERING: 'polyqlabs.data.metering.{user_id}',
+  TELEMETRY: 'lex://estream/apps/polyqlabs.data/telemetry',
+  TELEMETRY_SLI: 'lex://estream/apps/polyqlabs.data/telemetry/sli',
+  BASELINE: 'lex://estream/apps/polyqlabs.data/metrics/baseline',
+  DEVIATIONS: 'lex://estream/apps/polyqlabs.data/metrics/deviations',
+  INCIDENTS: 'lex://estream/apps/polyqlabs.data/incidents',
+  TRENDS: 'lex://estream/apps/polyqlabs.data/metrics/trends',
+  SLA: 'lex://estream/apps/polyqlabs.data/sla',
+  CAPACITY: 'lex://estream/apps/polyqlabs.data/capacity',
+  ESLM_CLASSIFICATION: 'lex://estream/apps/polyqlabs.data/eslm/classification',
+  ESLM_RECOMMENDATION: 'lex://estream/apps/polyqlabs.data/eslm/recommendation',
+  ESLM_SANITIZATION: 'lex://estream/apps/polyqlabs.data/eslm/sanitization',
+  ESLM_CAPACITY: 'lex://estream/apps/polyqlabs.data/eslm/capacity',
+  ESLM_ANOMALY: 'lex://estream/apps/polyqlabs.data/eslm/anomaly',
+  ESLM_SECURITY: 'lex://estream/apps/polyqlabs.data/eslm/security',
 } as const;
 
 // ─── ESLite Table Names ──────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ export const ESLITE_TABLES = {
   CLASSIFY: '/polydata/classify',
 } as const;
 
-// ─── poly-data-classify types ────────────────────────────────────────────────
+// ─── q-data-classify types ────────────────────────────────────────────────
 
 export type Classification =
   | 'PUBLIC'
@@ -85,7 +85,7 @@ export interface ClassificationPolicy {
   minimumClassification?: Classification;
 }
 
-// ─── poly-data-encrypt types ─────────────────────────────────────────────────
+// ─── q-data-encrypt types ─────────────────────────────────────────────────
 
 export interface FileKey {
   bytes: Uint8Array; // 32 bytes AES-256-GCM
@@ -102,7 +102,7 @@ export interface EncryptedChunk {
   chunkIndex: number;
 }
 
-// ─── poly-data-chunk types ───────────────────────────────────────────────────
+// ─── q-data-chunk types ───────────────────────────────────────────────────
 
 export interface Chunk {
   index: number;
@@ -117,7 +117,7 @@ export interface Shard {
   isOriginal: boolean;
 }
 
-// ─── poly-data-manifest types ────────────────────────────────────────────────
+// ─── q-data-manifest types ────────────────────────────────────────────────
 
 export interface FileId {
   bytes: Uint8Array; // 16 bytes
@@ -155,7 +155,7 @@ export interface VersionEntry {
   timestamp: number;
 }
 
-// ─── poly-data-eslm-classify types ───────────────────────────────────────────
+// ─── q-data-eslm-classify types ───────────────────────────────────────────
 
 export interface ClassificationSuggestion {
   tag: Classification;
@@ -171,7 +171,7 @@ export interface HumanFeedback {
   timestamp: number;
 }
 
-// ─── poly-data-share types ───────────────────────────────────────────────────
+// ─── q-data-share types ───────────────────────────────────────────────────
 
 export type FileSharePermissions = 'ViewOnly' | 'Download';
 
@@ -196,7 +196,7 @@ export interface EphemeralFileShare {
   expiresAt: number;
 }
 
-// ─── poly-data-metering types ────────────────────────────────────────────────
+// ─── q-data-metering types ────────────────────────────────────────────────
 
 export type MeteringDimension = 'E' | 'H' | 'B' | 'S' | 'O' | 'P' | 'C' | 'M';
 
@@ -207,7 +207,7 @@ export interface MeteringRecord {
   timestamp: number;
 }
 
-// ─── poly-data-storage-router FSM states ─────────────────────────────────────
+// ─── q-data-storage-router FSM states ─────────────────────────────────────
 
 export type StorageRouterState =
   | 'uploading'

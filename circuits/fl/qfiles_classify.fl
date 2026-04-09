@@ -1,7 +1,7 @@
 // PolyFiles Classify — Classification assignment and distribute policy lookup
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/classify
+//   esn/global/org/polyqlabs/files/classify
 //   5-level classification: Public → Internal → Sensitive → Restricted → Sovereign
 //   Each level maps to a distribute policy (k-of-n erasure + jurisdiction count).
 //   Supports manual, inherited, ESLM auto, and .polyclassification file sources.
@@ -13,8 +13,8 @@
 //   Restricted: k=7,  n=9,  jurisdictions=3
 //   Sovereign:  k=9,  n=13, jurisdictions=5
 
-import polykit_metering
-import polykit_governance
+import qkit_metering
+import qkit_governance
 
 type Classification = enum {
     Public,
@@ -39,7 +39,7 @@ data ScatterPolicy : files v1 {
     geo_diversity: bool,
 }
     store kv
-    govern lex global/org/polylabs/files/classify
+    govern lex global/org/polyqlabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -52,7 +52,7 @@ data ClassificationRule : files v1 {
     priority: u8,
 }
     store kv
-    govern lex global/org/polylabs/files/classify
+    govern lex global/org/polyqlabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -65,7 +65,7 @@ data ClassificationPolicy : files v1 {
     minimum_level: Classification,
 }
     store kv
-    govern lex global/org/polylabs/files/classify
+    govern lex global/org/polyqlabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -79,7 +79,7 @@ data ClassifyResult : files v1 {
     rule_matched: string,
 }
     store kv
-    govern lex global/org/polylabs/files/classify
+    govern lex global/org/polyqlabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -92,7 +92,7 @@ data ValidationResult : files v1 {
     actual_level: Classification,
 }
     store kv
-    govern lex global/org/polylabs/files/classify
+    govern lex global/org/polyqlabs/files/classify
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -108,7 +108,7 @@ circuit classify_file(
     eslm_confidence: f32,
 ) -> ClassifyResult
     profile poly_framework_standard
-    lex global/org/polylabs/files/classify
+    lex global/org/polyqlabs/files/classify
     @precision C
     @observe metrics: [classifications_assigned, classification_changes, source_distribution]
     monitor "classification_latency" { classify_time_ms < 10 }
@@ -178,7 +178,7 @@ circuit classify_file(
 // --- Parse .polyclassification file ---
 circuit parse_polyclassification(content: string) -> list<ClassificationRule>
     profile poly_framework_standard
-    lex global/org/polylabs/files/classify
+    lex global/org/polyqlabs/files/classify
     @precision C
     @observe metrics: [polyclassification_parses, rules_parsed]
     monitor "parse_errors" { parse_failures == 0 }
@@ -221,7 +221,7 @@ circuit parse_polyclassification(content: string) -> list<ClassificationRule>
 // --- Look up distribute policy for a classification level ---
 circuit lookup_scatter_policy(classification: Classification) -> ScatterPolicy
     profile poly_framework_standard
-    lex global/org/polylabs/files/classify
+    lex global/org/polyqlabs/files/classify
     @precision C
     @observe metrics: [scatter_lookups]
     invariant "valid_k_n" { result.k < result.n }
@@ -237,7 +237,7 @@ circuit validate_classification(
     policy: ClassificationPolicy,
 ) -> ValidationResult
     profile poly_framework_standard
-    lex global/org/polylabs/files/classify
+    lex global/org/polyqlabs/files/classify
     @precision C
     @observe metrics: [classification_validations, validation_failures]
     monitor "validation_rejections" { rejection_rate < 0.1 }

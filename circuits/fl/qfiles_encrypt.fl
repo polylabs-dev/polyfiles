@@ -1,7 +1,7 @@
 // PolyFiles Encrypt — Client-side AES-256-GCM file encryption with ML-KEM-1024 key wrapping
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/encrypt
+//   esn/global/org/polyqlabs/files/encrypt
 //   Per-file AES-256-GCM keys generated client-side in WASM.
 //   Keys wrapped with SPARK-derived ML-KEM-1024 user keys.
 //   Keys never leave the client boundary.
@@ -12,8 +12,8 @@
 //   encrypt_chunk     → AES-256-GCM(file_key, nonce=chunk_index, chunk)
 //   rewrap_file_key   → re-wrap for share recipient's ML-KEM-1024 key
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 type FileKey = bytes(32)
 type ChunkIndex = u32
@@ -25,7 +25,7 @@ data WrappedFileKey : files v1 {
     key_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/encrypt
+    govern lex global/org/polyqlabs/files/encrypt
     cortex {
         redact [kem_ciphertext, encrypted_file_key]
         infer on_write
@@ -40,7 +40,7 @@ data EncryptedChunk : files v1 {
     plaintext_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/encrypt
+    govern lex global/org/polyqlabs/files/encrypt
     cortex {
         redact [ciphertext, nonce, tag]
         infer on_write
@@ -53,7 +53,7 @@ data DecryptedChunk : files v1 {
     verified: bool,
 }
     store kv
-    govern lex global/org/polylabs/files/encrypt
+    govern lex global/org/polyqlabs/files/encrypt
     cortex {
         redact [plaintext]
         infer on_write
@@ -66,7 +66,7 @@ data RewrapRequest : files v1 {
     sender_user_id: bytes(16),
 }
     store kv
-    govern lex global/org/polylabs/files/encrypt
+    govern lex global/org/polyqlabs/files/encrypt
     cortex {
         redact [file_key, recipient_kem_public]
         infer on_write
@@ -76,7 +76,7 @@ data RewrapRequest : files v1 {
 // --- Generate random AES-256-GCM per-file key ---
 circuit generate_file_key() -> FileKey
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [file_key_generations, csprng_calls]
@@ -95,7 +95,7 @@ circuit generate_file_key() -> FileKey
 // --- Wrap per-file key with SPARK ML-KEM-1024 public key ---
 circuit wrap_file_key(file_key: FileKey, spark_kem_public: bytes(1568)) -> WrappedFileKey
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [key_wraps, mlkem_encaps_ops]
@@ -107,7 +107,7 @@ circuit wrap_file_key(file_key: FileKey, spark_kem_public: bytes(1568)) -> Wrapp
 {
     let kem_result = mlkem_encaps(spark_kem_public)
     let shared_secret = kem_result.shared_secret
-    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let wrapping_key = hkdf_sha3(shared_secret, "qfiles-keywrap-v1", 32)
     let encrypted_file_key = aes_kw_wrap(wrapping_key, file_key)
     let key_hash = blake3(file_key)
     WrappedFileKey {
@@ -120,7 +120,7 @@ circuit wrap_file_key(file_key: FileKey, spark_kem_public: bytes(1568)) -> Wrapp
 // --- Unwrap per-file key with SPARK ML-KEM-1024 private key ---
 circuit unwrap_file_key(wrapped: WrappedFileKey, spark_kem_private: bytes(3168)) -> FileKey
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [key_unwraps, mlkem_decaps_ops]
@@ -130,7 +130,7 @@ circuit unwrap_file_key(wrapped: WrappedFileKey, spark_kem_private: bytes(3168))
     meters [compute_cycles, hashes]
 {
     let shared_secret = mlkem_decaps(spark_kem_private, wrapped.kem_ciphertext)
-    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let wrapping_key = hkdf_sha3(shared_secret, "qfiles-keywrap-v1", 32)
     let file_key = aes_kw_unwrap(wrapping_key, wrapped.encrypted_file_key)
     let check_hash = blake3(file_key)
     assert(check_hash == wrapped.key_hash, "key integrity check failed")
@@ -140,7 +140,7 @@ circuit unwrap_file_key(wrapped: WrappedFileKey, spark_kem_private: bytes(3168))
 // --- Encrypt a single chunk with AES-256-GCM ---
 circuit encrypt_chunk(plaintext: bytes, file_key: FileKey, chunk_index: ChunkIndex) -> EncryptedChunk
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [chunk_encryptions, bytes_encrypted, aes_gcm_ops]
@@ -166,7 +166,7 @@ circuit encrypt_chunk(plaintext: bytes, file_key: FileKey, chunk_index: ChunkInd
 // --- Decrypt a single chunk with AES-256-GCM ---
 circuit decrypt_chunk(encrypted: EncryptedChunk, file_key: FileKey) -> DecryptedChunk
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [chunk_decryptions, bytes_decrypted, aes_gcm_ops]
@@ -189,7 +189,7 @@ circuit decrypt_chunk(encrypted: EncryptedChunk, file_key: FileKey) -> Decrypted
 // --- Re-wrap file key for a share recipient ---
 circuit rewrap_file_key(file_key: FileKey, recipient_kem_public: bytes(1568)) -> WrappedFileKey
     profile poly_framework_sensitive
-    lex global/org/polylabs/files/encrypt
+    lex global/org/polyqlabs/files/encrypt
     @precision C
     constant_time true
     @observe metrics: [key_rewraps, share_ops, mlkem_encaps_ops]
@@ -201,7 +201,7 @@ circuit rewrap_file_key(file_key: FileKey, recipient_kem_public: bytes(1568)) ->
 {
     let kem_result = mlkem_encaps(recipient_kem_public)
     let shared_secret = kem_result.shared_secret
-    let wrapping_key = hkdf_sha3(shared_secret, "polyfiles-keywrap-v1", 32)
+    let wrapping_key = hkdf_sha3(shared_secret, "qfiles-keywrap-v1", 32)
     let encrypted_file_key = aes_kw_wrap(wrapping_key, file_key)
     let key_hash = blake3(file_key)
     WrappedFileKey {
@@ -227,7 +227,7 @@ circuit chunk_index_to_aad(chunk_index: ChunkIndex) -> bytes
     profile poly_framework_standard
     @precision C
 {
-    let prefix = "polyfiles-chunk-aad-v1:"
+    let prefix = "qfiles-chunk-aad-v1:"
     concat(prefix, u32_to_be_bytes(chunk_index))
 }
 
@@ -329,11 +329,11 @@ golden_test "mlkem_1024_encaps_decaps" {
     }
 }
 
-golden_test "hkdf_sha3_polyfiles_context" {
+golden_test "hkdf_sha3_qfiles_context" {
     function: "hkdf_sha3"
     input: {
         ikm: hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-        info: "polyfiles-keywrap-v1"
+        info: "qfiles-keywrap-v1"
         length: 32
     }
     expected: {

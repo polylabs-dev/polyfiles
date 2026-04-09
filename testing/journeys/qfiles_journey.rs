@@ -11,7 +11,7 @@ pub struct PolyfilesJourney;
 
 impl Journey for PolyfilesJourney {
     fn name(&self) -> &str {
-        "polyfiles_e2e"
+        "qfiles_e2e"
     }
 
     fn description(&self) -> &str {
@@ -21,13 +21,13 @@ impl Journey for PolyfilesJourney {
     fn parties(&self) -> Vec<JourneyParty> {
         vec![
             JourneyParty::new("alice")
-                .with_spark_context("poly-files-v1")
+                .with_spark_context("q-files-v1")
                 .with_role("owner"),
             JourneyParty::new("bob")
-                .with_spark_context("poly-files-v1")
+                .with_spark_context("q-files-v1")
                 .with_role("recipient"),
             JourneyParty::new("charlie")
-                .with_spark_context("poly-files-v1")
+                .with_spark_context("q-files-v1")
                 .with_role("auditor"),
         ]
     }
@@ -39,7 +39,7 @@ impl Journey for PolyfilesJourney {
                 .party("alice")
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let file_content = ctx.generate_test_payload(1024 * 64); // 64 KiB
-                    let upload_result = ctx.polyfiles().upload(
+                    let upload_result = ctx.qfiles().upload(
                         "quarterly-report.pdf",
                         &file_content,
                         ErasureConfig::new(3, 5), // k=3, n=5
@@ -51,12 +51,12 @@ impl Journey for PolyfilesJourney {
                     assert!(upload_result.scatter_shards >= 5);
                     assert!(upload_result.cid.starts_with("bafk"));
 
-                    assert_metric_emitted!(ctx, "polyfiles.upload.complete", {
+                    assert_metric_emitted!(ctx, "qfiles.upload.complete", {
                         "shard_count" => "5",
                         "erasure_k" => "3",
                     });
 
-                    assert_povc_witness!(ctx, "polyfiles.upload", {
+                    assert_povc_witness!(ctx, "qfiles.upload", {
                         witness_type: "scatter_store",
                         cid: &upload_result.cid,
                     });
@@ -73,7 +73,7 @@ impl Journey for PolyfilesJourney {
                     let file_cid = ctx.get::<String>("file_cid");
                     let alice_id = ctx.party_id("alice");
 
-                    let share = ctx.polyfiles().accept_share(
+                    let share = ctx.qfiles().accept_share(
                         &alice_id,
                         &file_cid,
                         &["read"],
@@ -82,14 +82,14 @@ impl Journey for PolyfilesJourney {
                     assert!(share.access_granted);
                     assert_eq!(share.permissions, vec!["read"]);
 
-                    let downloaded = ctx.polyfiles().download(&file_cid)?;
+                    let downloaded = ctx.qfiles().download(&file_cid)?;
                     assert_eq!(downloaded.len(), 1024 * 64);
 
-                    assert_metric_emitted!(ctx, "polyfiles.share.accepted", {
+                    assert_metric_emitted!(ctx, "qfiles.share.accepted", {
                         "permission_level" => "read",
                     });
 
-                    assert_blinded!(ctx, "polyfiles.share.accepted", {
+                    assert_blinded!(ctx, "qfiles.share.accepted", {
                         field: "recipient_id",
                         blinding: "hmac_sha3",
                     });
@@ -105,21 +105,21 @@ impl Journey for PolyfilesJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let file_cid = ctx.get::<String>("file_cid");
 
-                    let provenance = ctx.polyfiles().verify_provenance(&file_cid)?;
+                    let provenance = ctx.qfiles().verify_provenance(&file_cid)?;
 
                     assert!(provenance.witness_chain_valid);
                     assert_eq!(provenance.origin_party_role, "owner");
                     assert!(provenance.chain_length >= 1);
 
                     for witness in &provenance.witnesses {
-                        assert_povc_witness!(ctx, "polyfiles.provenance", {
+                        assert_povc_witness!(ctx, "qfiles.provenance", {
                             witness_type: "chain_link",
                             cid: &file_cid,
                             witness_id: &witness.id,
                         });
                     }
 
-                    assert_blinded!(ctx, "polyfiles.provenance.query", {
+                    assert_blinded!(ctx, "qfiles.provenance.query", {
                         field: "auditor_id",
                         blinding: "hmac_sha3",
                     });
@@ -136,7 +136,7 @@ impl Journey for PolyfilesJourney {
                     let file_cid = ctx.get::<String>("file_cid");
                     let bob_id = ctx.party_id("bob");
 
-                    let revoke_result = ctx.polyfiles().revoke_share(
+                    let revoke_result = ctx.qfiles().revoke_share(
                         &file_cid,
                         &bob_id,
                     )?;
@@ -145,14 +145,14 @@ impl Journey for PolyfilesJourney {
                     assert!(revoke_result.re_keyed);
 
                     let bob_ctx = ctx.as_party("bob");
-                    let access_attempt = bob_ctx.polyfiles().download(&file_cid);
+                    let access_attempt = bob_ctx.qfiles().download(&file_cid);
                     assert!(access_attempt.is_err());
 
-                    assert_metric_emitted!(ctx, "polyfiles.share.revoked", {
+                    assert_metric_emitted!(ctx, "qfiles.share.revoked", {
                         "re_keyed" => "true",
                     });
 
-                    assert_povc_witness!(ctx, "polyfiles.revoke", {
+                    assert_povc_witness!(ctx, "qfiles.revoke", {
                         witness_type: "access_revocation",
                         cid: &file_cid,
                     });
@@ -181,7 +181,7 @@ impl Journey for PolyfilesJourney {
                     assert!(merkle.root_hash_valid);
                     assert!(merkle.series_count >= 1);
 
-                    assert_metric_emitted!(ctx, "polyfiles.stratum.verified", {
+                    assert_metric_emitted!(ctx, "qfiles.stratum.verified", {
                         "csr_tier" => "hot",
                         "chain_intact" => "true",
                     });
@@ -195,7 +195,7 @@ impl Journey for PolyfilesJourney {
                 .party("alice")
                 .depends_on(&["verify_scatter_cas_storage"])
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let telemetry = ctx.streamsight().drain_telemetry("poly-files-v1");
+                    let telemetry = ctx.streamsight().drain_telemetry("q-files-v1");
 
                     for event in &telemetry {
                         assert_blinded!(ctx, &event.event_type, {
@@ -210,8 +210,8 @@ impl Journey for PolyfilesJourney {
                     }
 
                     let cortex = CortexVisibility::new(ctx);
-                    cortex.assert_redacted("polyfiles", RedactPolicy::ContentFields)?;
-                    cortex.assert_obfuscated("polyfiles", ObfuscatePolicy::PartyIdentifiers)?;
+                    cortex.assert_redacted("qfiles", RedactPolicy::ContentFields)?;
+                    cortex.assert_obfuscated("qfiles", ObfuscatePolicy::PartyIdentifiers)?;
 
                     assert!(telemetry.len() >= 5, "Expected at least 5 telemetry events");
 
@@ -221,8 +221,8 @@ impl Journey for PolyfilesJourney {
                         .collect();
                     for ns in &namespaces {
                         assert!(
-                            ns.starts_with("poly-files-v1"),
-                            "Telemetry must stay within poly-files-v1 namespace, found: {}",
+                            ns.starts_with("q-files-v1"),
+                            "Telemetry must stay within q-files-v1 namespace, found: {}",
                             ns
                         );
                     }
@@ -236,15 +236,15 @@ impl Journey for PolyfilesJourney {
     fn metrics(&self) -> JourneyMetrics {
         JourneyMetrics {
             expected_events: vec![
-                "polyfiles.upload.complete",
-                "polyfiles.share.accepted",
-                "polyfiles.provenance.query",
-                "polyfiles.share.revoked",
-                "polyfiles.stratum.verified",
+                "qfiles.upload.complete",
+                "qfiles.share.accepted",
+                "qfiles.provenance.query",
+                "qfiles.share.revoked",
+                "qfiles.stratum.verified",
             ],
             max_duration_ms: 60_000,
             required_povc_witnesses: 4,
-            lex_namespace: "poly-files-v1",
+            lex_namespace: "q-files-v1",
         }
     }
 }
@@ -255,10 +255,10 @@ mod tests {
     use estream_test::convoy::ConvoyRunner;
 
     #[tokio::test]
-    async fn run_polyfiles_journey() {
+    async fn run_qfiles_journey() {
         let runner = ConvoyRunner::new()
             .with_scatter_cas()
-            .with_streamsight("poly-files-v1")
+            .with_streamsight("q-files-v1")
             .with_stratum()
             .with_cortex();
 

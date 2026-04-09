@@ -1,21 +1,21 @@
 [package]
-name = "polyfiles"
+name = "qfiles"
 version = "0.12.0"
 description = "Scatter-distributed encrypted file storage with PQ cryptography and zero-linkage privacy"
 license = "LicenseRef-PolyQuantum-Commercial"
-repository = "https://github.com/polylabs-dev/polyfiles"
+repository = "https://github.com/polylabs-dev/qfiles"
 
 [publisher]
 id = "polylabs-dev"
-name = "Poly Labs"
-signing_key_id = "polylabs-prime-v1"
+name = "PolyQ Labs"
+signing_key_id = "polyqlabs-prime-v1"
 
 [flir]
 api_version = "0.22.0"
 min_platform_version = "0.22.0"
 
 [dependencies]
-polykit = ">=0.3.0"
+qkit = ">=0.3.0"
 
 [pricing]
 license_type = "per-invocation"

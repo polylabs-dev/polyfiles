@@ -3,10 +3,10 @@ version = "0.22.0"
 min_version = "0.22.0"
 
 [project]
-name = "polyfiles"
+name = "qfiles"
 description = "Scatter-distributed encrypted file storage with PQ cryptography and zero-linkage privacy"
 organization = "polylabs-dev"
-repository = "https://github.com/polylabs-dev/polyfiles"
+repository = "https://github.com/polylabs-dev/qfiles"
 
 [build]
 circuits = "circuits/fl/**/*.fl"
@@ -24,10 +24,10 @@ wasm = true
 typescript_types = true
 
 [dependencies]
-polykit = { version = ">=0.3.0", path = "../polykit" }
+qkit = { version = ">=0.3.0", path = "../qkit" }
 
 [lex]
-root = "esn/global/org/polylabs/files"
+root = "esn/global/org/polyqlabs/files"
 
 [cortex]
 default_alert_team = "files-team"

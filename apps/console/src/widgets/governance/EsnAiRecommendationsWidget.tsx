@@ -14,7 +14,7 @@
  *   Listens: DEVIATION_SELECT (highlights correlated recommendations)
  *            FILTER_RESET (clears highlights)
  *
- * Lex stream: polylabs.data.eslm.recommendation
+ * Lex stream: polyqlabs.data.eslm.recommendation
  * Required role: polydata-operator
  */
 
@@ -45,7 +45,7 @@ export default function EsnAiRecommendationsWidget() {
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
   const { data: liveData, status } = useStreamSubscription(
-    'polylabs.data.eslm.recommendation',
+    'polyqlabs.data.eslm.recommendation',
   );
 
   const data = fixture ?? liveData;
@@ -63,7 +63,7 @@ export default function EsnAiRecommendationsWidget() {
       });
     }
     // Emit feedback to ESN-AI stream
-    // await client.emit('polylabs.data.eslm.recommendation.feedback', { id: rec.id, action });
+    // await client.emit('polyqlabs.data.eslm.recommendation.feedback', { id: rec.id, action });
   };
 
   const handleCircuitClick = (e: React.MouseEvent, circuit: string) => {

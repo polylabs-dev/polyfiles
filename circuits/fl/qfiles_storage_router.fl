@@ -1,16 +1,16 @@
-// Poly Files Storage Router — server-side distribute storage routing
+// Q Files Storage Router — server-side distribute storage routing
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/router
+//   esn/global/org/polyqlabs/files/router
 //     └── sub_lex session fan_in  ← per-upload session; only metrics/status fan up
 //
 // Validates manifest ML-DSA-87 signatures, enforces distribute policies per
 // classification level, distributes shards via VRF-directed distribute to
 // k-of-n storage nodes, records manifests, and updates file indices.
 
-import polykit_identity from "../../polykit/circuits/fl/polykit_identity.fl"
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
-import polykit_governance from "../../polykit/circuits/fl/polykit_governance.fl"
+import qkit_identity from "../../qkit/circuits/fl/qkit_identity.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
+import qkit_governance from "../../qkit/circuits/fl/qkit_governance.fl"
 
 type FileId = bytes(32)
 type ShardId = bytes(32)
@@ -37,7 +37,7 @@ data Manifest : files v1 {
     timestamp_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/router
+    govern lex global/org/polyqlabs/files/router
     cortex {
         redact [signature, signing_pk, encryption_nonce, owner_id]
         infer on_write
@@ -54,7 +54,7 @@ data Shard : files v1 {
     content_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/router
+    govern lex global/org/polyqlabs/files/router
     cortex {
         redact [content_hash, node_id]
         infer on_write
@@ -69,7 +69,7 @@ data ScatterResult : files v1 {
     vrf_seed: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/files/router
+    govern lex global/org/polyqlabs/files/router
     cortex {
         redact [vrf_seed, placement_proof]
         infer on_write
@@ -85,7 +85,7 @@ data DownloadToken : files v1 {
     token_signature: bytes(4627),
 }
     store kv
-    govern lex global/org/polylabs/files/router
+    govern lex global/org/polyqlabs/files/router
     cortex {
         redact [token_signature, requester_id, shard_locations]
         infer on_write
@@ -100,7 +100,7 @@ data IndexEntry : files v1 {
     updated_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/router
+    govern lex global/org/polyqlabs/files/router
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -151,25 +151,25 @@ state_machine file_lifecycle {
 
 stream upload_events: event<Manifest>
     | throttle 500/s burst 1000
-    | topic "polylabs.files.{user_id}.upload"
+    | topic "polyqlabs.files.{user_id}.upload"
     | retention permanent
     | hash_chain true
 
 stream download_events: event<DownloadToken>
     | throttle 1000/s burst 2000
-    | topic "polylabs.files.{user_id}.download"
+    | topic "polyqlabs.files.{user_id}.download"
     | retention none
 
 stream confirm_events: event<ScatterResult>
     | throttle 500/s burst 1000
-    | topic "polylabs.files.{user_id}.upload.confirm"
+    | topic "polyqlabs.files.{user_id}.upload.confirm"
     | retention ephemeral
 
 // --- Validate manifest signature and distribute policy ---
 circuit validate_manifest(manifest: Manifest) -> bool
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router
+    lex global/org/polyqlabs/files/router
     @precision C
     @observe metrics: [manifest_validations, signature_checks, policy_violations]
     monitor "validation_latency" { validation_time_ms < 20 }
@@ -177,14 +177,14 @@ circuit validate_manifest(manifest: Manifest) -> bool
     invariant "valid_scatter_k" { scatter_k(manifest.scatter_policy) <= scatter_n(manifest.scatter_policy) }
     property safety "valid_signature_required" { result == true implies sig_valid == true }
 {
-    let sig_valid = polykit_identity::verify_signature(
+    let sig_valid = qkit_identity::verify_signature(
         manifest.signing_pk,
         sha3_256(manifest.file_id ++ manifest.content_hash ++ u64_to_bytes(manifest.timestamp_ms)),
         manifest.signature
     )
     if !sig_valid { return false }
 
-    let owner_derived = polykit_identity::derive_user_id(manifest.signing_pk)
+    let owner_derived = qkit_identity::derive_user_id(manifest.signing_pk)
     if owner_derived != manifest.owner_id { return false }
 
     let policy_valid = match manifest.scatter_policy {
@@ -200,7 +200,7 @@ circuit validate_manifest(manifest: Manifest) -> bool
 circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32)]) -> ScatterResult
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router {
+    lex global/org/polyqlabs/files/router {
         sub_lex session fan_in
     }
     @precision C
@@ -252,7 +252,7 @@ circuit scatter_shards(manifest: Manifest, shards: [Shard], node_pool: [bytes(32
 circuit store_manifest(manifest: Manifest) -> ManifestHash
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router
+    lex global/org/polyqlabs/files/router
     @precision C
     @observe metrics: [manifests_stored, storage_latency_ms]
     monitor "store_throughput" { manifests_stored > 0 }
@@ -283,7 +283,7 @@ circuit store_manifest(manifest: Manifest) -> ManifestHash
 circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: bytes(2592), requester_sig: bytes(4627)) -> DownloadToken
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router
+    lex global/org/polyqlabs/files/router
     @precision C
     meters [compute_cycles, bandwidth]
     @observe metrics: [downloads_routed, download_latency_ms, auth_failures]
@@ -292,10 +292,10 @@ circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: byte
     property safety "access_control_enforced" { !is_owner && !has_share implies error("access_denied") }
     wasm_abi [eslite_query, now]
 {
-    let derived_id = polykit_identity::derive_user_id(requester_pk)
+    let derived_id = qkit_identity::derive_user_id(requester_pk)
     if derived_id != requester_id { return error("identity_mismatch") }
 
-    let sig_valid = polykit_identity::verify_signature(
+    let sig_valid = qkit_identity::verify_signature(
         requester_pk,
         file_id,
         requester_sig
@@ -317,7 +317,7 @@ circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: byte
         shard_locations: shards,
         shard_count: len(shards),
         expiry_ms: expiry,
-        token_signature: polykit_identity::sign_message(
+        token_signature: qkit_identity::sign_message(
             eslite_query("server_sk"),
             file_id ++ requester_id ++ u64_to_bytes(expiry)
         ),
@@ -328,7 +328,7 @@ circuit route_download(file_id: FileId, requester_id: UserId, requester_pk: byte
 circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size: u64, new_version: u64) -> IndexEntry
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router
+    lex global/org/polyqlabs/files/router
     @precision C
     @observe metrics: [index_updates]
     invariant "version_positive" { new_version > 0 }
@@ -351,7 +351,7 @@ circuit update_index(file_id: FileId, new_manifest_hash: ManifestHash, new_size:
 circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), owner_pk: bytes(2592)) -> bool
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/router
+    lex global/org/polyqlabs/files/router
     @precision C
     meters [compute_cycles]
     @observe metrics: [files_purged, purge_latency_ms, shard_deletions]
@@ -360,10 +360,10 @@ circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), ow
     property safety "purge_requires_ownership" { derived == owner_id && sig_valid }
     wasm_abi [eslite_delete, eslite_query, now]
 {
-    let derived = polykit_identity::derive_user_id(owner_pk)
+    let derived = qkit_identity::derive_user_id(owner_pk)
     if derived != owner_id { return false }
 
-    let sig_valid = polykit_identity::verify_signature(
+    let sig_valid = qkit_identity::verify_signature(
         owner_pk,
         file_id ++ owner_id,
         owner_sig
@@ -386,13 +386,13 @@ circuit purge_file(file_id: FileId, owner_id: UserId, owner_sig: bytes(4627), ow
 test golden "validate_and_store_manifest" {
     steps {
         let (signing_pk, signing_sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(signing_pk)
+        let owner_id = qkit_identity::derive_user_id(signing_pk)
         let file_id = sha3_256(bytes("router-test-file"))
         let content_hash = blake3(bytes("file content"))
         let ts = 1700000000000u64
 
         let sig_payload = sha3_256(file_id ++ content_hash ++ u64_to_bytes(ts))
-        let signature = polykit_identity::sign_message(signing_sk, sig_payload)
+        let signature = qkit_identity::sign_message(signing_sk, sig_payload)
 
         let manifest = Manifest {
             file_id: file_id,
@@ -420,7 +420,7 @@ test golden "validate_and_store_manifest" {
 test golden "scatter_shards_standard_policy" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let owner_id = polykit_identity::derive_user_id(pk)
+        let owner_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("distribute-test"))
 
         let manifest = Manifest {
@@ -453,9 +453,9 @@ test golden "scatter_shards_standard_policy" {
 test golden "route_download_authorized" {
     steps {
         let (pk, sk) = mldsa_keygen()
-        let user_id = polykit_identity::derive_user_id(pk)
+        let user_id = qkit_identity::derive_user_id(pk)
         let file_id = sha3_256(bytes("download-test"))
-        let sig = polykit_identity::sign_message(sk, file_id)
+        let sig = qkit_identity::sign_message(sk, file_id)
 
         let token = route_download(file_id, user_id, pk, sig)
     }

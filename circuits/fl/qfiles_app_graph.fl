@@ -1,10 +1,10 @@
 /// Spec: specs/POLYFILES_CE_APP_GRAPH_SPEC.md
 /// App Graph for PolyFiles — 15 ModuleNode definitions (12 core circuits + 3
 /// graph circuits) composing scatter-distributed encrypted storage. Registers
-/// intra-graph REQUIRES edges and cross-graph EDGE_BRIDGE_TO edges to PolyKit
+/// intra-graph REQUIRES edges and cross-graph EDGE_BRIDGE_TO edges to QKit
 /// collaboration, PolyDocs document_edit, and eStream scatter-CAS.
 
-lex polylabs/polyfiles
+lex polyqlabs/qfiles
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -25,14 +25,14 @@ import "core/deployment/module_stratum.fl" {
 const POLYFILES_VERSION_MAJOR: u32 = 0
 const POLYFILES_VERSION_MINOR: u32 = 1
 const POLYFILES_VERSION_PATCH: u32 = 0
-const POLYFILES_APP_LEX: string = "polylabs/polyfiles"
+const POLYFILES_APP_LEX: string = "polyqlabs/qfiles"
 const POLYFILES_VERSION_STR: string = "0.1.0"
 const POLYFILES_MODULE_COUNT: u64 = 15
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-circuit polyfiles_placeholder_receipt() -> CompilationReceipt
-    lex polylabs/polyfiles
+circuit qfiles_placeholder_receipt() -> CompilationReceipt
+    lex polyqlabs/qfiles
     @status draft
     @precision D
 {
@@ -52,13 +52,13 @@ circuit polyfiles_placeholder_receipt() -> CompilationReceipt
     }
 }
 
-circuit make_polyfiles_module(
+circuit make_qfiles_module(
     name: string,
     partition: u8,
     sla: u8,
     budget: ResourceBudget8D
 ) -> ModuleNode
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
     observe metrics: [module_name, aperture_partition]
@@ -78,7 +78,7 @@ circuit make_polyfiles_module(
         required_entitlement: EntitlementTier::Free as u8,
         classification_domains: [],
         max_classification_level: 0,
-        compilation_receipt: polyfiles_placeholder_receipt(),
+        compilation_receipt: qfiles_placeholder_receipt(),
         source_hash: bytes(32, 0x00),
         compiler_version_major: POLYFILES_VERSION_MAJOR,
         compiler_version_minor: POLYFILES_VERSION_MINOR,
@@ -103,7 +103,7 @@ circuit make_requires_edge(
     source: string,
     target: string
 ) -> ModuleEdge
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision D
 {
@@ -121,13 +121,13 @@ circuit make_requires_edge(
 // Module Definitions — 15 ModuleNodes (12 core + 3 graphs)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── polyfiles_chunk ── erasure-coded chunking over scatter-CAS ───────────────
+// ── qfiles_chunk ── erasure-coded chunking over scatter-CAS ───────────────
 
-circuit polyfiles_chunk_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_chunk_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_chunk", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_chunk", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 400000, hash_ops: 8000, bandwidth: 200000,
             storage: 500000, observe_events: 10000, proofs: 200,
@@ -135,13 +135,13 @@ circuit polyfiles_chunk_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_classify ── rule-based file type classification ────────────────
+// ── qfiles_classify ── rule-based file type classification ────────────────
 
-circuit polyfiles_classify_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_classify_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_classify", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_classify", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 100000, hash_ops: 1000, bandwidth: 20000,
             storage: 30000, observe_events: 5000, proofs: 50,
@@ -149,13 +149,13 @@ circuit polyfiles_classify_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_dedup ── content-defined chunking + dedup ──────────────────────
+// ── qfiles_dedup ── content-defined chunking + dedup ──────────────────────
 
-circuit polyfiles_dedup_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_dedup_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_dedup", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_dedup", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 300000, hash_ops: 10000, bandwidth: 100000,
             storage: 200000, observe_events: 8000, proofs: 100,
@@ -163,13 +163,13 @@ circuit polyfiles_dedup_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_document_edit ── CRDT document editing via PolyDocs bridge ─────
+// ── qfiles_document_edit ── CRDT document editing via PolyDocs bridge ─────
 
-circuit polyfiles_document_edit_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_document_edit_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_document_edit", AperturePartition::Head as u8,
+    make_qfiles_module("qfiles_document_edit", AperturePartition::Head as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 250000, hash_ops: 4000, bandwidth: 80000,
             storage: 150000, observe_events: 10000, proofs: 100,
@@ -177,13 +177,13 @@ circuit polyfiles_document_edit_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_encrypt ── ML-KEM-1024 envelope encryption ─────────────────────
+// ── qfiles_encrypt ── ML-KEM-1024 envelope encryption ─────────────────────
 
-circuit polyfiles_encrypt_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_encrypt_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles, hash_ops]
 {
-    make_polyfiles_module("polyfiles_encrypt", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_encrypt", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 500000, hash_ops: 15000, bandwidth: 150000,
             storage: 100000, observe_events: 8000, proofs: 300,
@@ -191,13 +191,13 @@ circuit polyfiles_encrypt_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_eslm_classify ── ESLM-powered semantic classification ──────────
+// ── qfiles_eslm_classify ── ESLM-powered semantic classification ──────────
 
-circuit polyfiles_eslm_classify_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_eslm_classify_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_eslm_classify", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_eslm_classify", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 200000, hash_ops: 2000, bandwidth: 40000,
             storage: 50000, observe_events: 6000, proofs: 50,
@@ -205,13 +205,13 @@ circuit polyfiles_eslm_classify_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_manifest ── file manifest + metadata index ─────────────────────
+// ── qfiles_manifest ── file manifest + metadata index ─────────────────────
 
-circuit polyfiles_manifest_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_manifest_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_manifest", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_manifest", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 200000, hash_ops: 5000, bandwidth: 60000,
             storage: 300000, observe_events: 10000, proofs: 150,
@@ -219,13 +219,13 @@ circuit polyfiles_manifest_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_metering ── per-user storage metering + quota ──────────────────
+// ── qfiles_metering ── per-user storage metering + quota ──────────────────
 
-circuit polyfiles_metering_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_metering_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_metering", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_metering", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 80000, hash_ops: 1000, bandwidth: 15000,
             storage: 40000, observe_events: 5000, proofs: 30,
@@ -233,13 +233,13 @@ circuit polyfiles_metering_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_platform_health ── health probes, latency histograms ───────────
+// ── qfiles_platform_health ── health probes, latency histograms ───────────
 
-circuit polyfiles_platform_health_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_platform_health_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_platform_health", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_platform_health", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 50000, hash_ops: 500, bandwidth: 10000,
             storage: 20000, observe_events: 8000, proofs: 20,
@@ -247,13 +247,13 @@ circuit polyfiles_platform_health_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_rbac ── field-level access control + sharing policies ───────────
+// ── qfiles_rbac ── field-level access control + sharing policies ───────────
 
-circuit polyfiles_rbac_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_rbac_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_rbac", AperturePartition::Shared as u8,
+    make_qfiles_module("qfiles_rbac", AperturePartition::Shared as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 150000, hash_ops: 3000, bandwidth: 30000,
             storage: 60000, observe_events: 6000, proofs: 100,
@@ -261,13 +261,13 @@ circuit polyfiles_rbac_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_share ── PQ-encrypted share links + ACL propagation ────────────
+// ── qfiles_share ── PQ-encrypted share links + ACL propagation ────────────
 
-circuit polyfiles_share_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_share_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_share", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_share", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 200000, hash_ops: 5000, bandwidth: 80000,
             storage: 100000, observe_events: 8000, proofs: 150,
@@ -275,13 +275,13 @@ circuit polyfiles_share_module() -> ModuleNode
         })
 }
 
-// ── polyfiles_storage_router ── hot/warm/cold tiering + scatter routing ──────
+// ── qfiles_storage_router ── hot/warm/cold tiering + scatter routing ──────
 
-circuit polyfiles_storage_router_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+circuit qfiles_storage_router_module() -> ModuleNode
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("polyfiles_storage_router", AperturePartition::Backend as u8,
+    make_qfiles_module("qfiles_storage_router", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 300000, hash_ops: 6000, bandwidth: 150000,
             storage: 200000, observe_events: 10000, proofs: 200,
@@ -292,10 +292,10 @@ circuit polyfiles_storage_router_module() -> ModuleNode
 // ── file_graph ── Stratum property graph: files, folders, tags ───────────────
 
 circuit file_graph_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("file_graph", AperturePartition::Backend as u8,
+    make_qfiles_module("file_graph", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 250000, hash_ops: 8000, bandwidth: 60000,
             storage: 400000, observe_events: 10000, proofs: 200,
@@ -306,10 +306,10 @@ circuit file_graph_module() -> ModuleNode
 // ── share_graph ── share relationship graph (users, groups, links) ───────────
 
 circuit share_graph_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("share_graph", AperturePartition::Backend as u8,
+    make_qfiles_module("share_graph", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 100000, hash_ops: 3000, bandwidth: 40000,
             storage: 80000, observe_events: 5000, proofs: 80,
@@ -320,10 +320,10 @@ circuit share_graph_module() -> ModuleNode
 // ── version_dag ── version history DAG per file ──────────────────────────────
 
 circuit version_dag_module() -> ModuleNode
-    lex polylabs/polyfiles  @status draft  @precision B
+    lex polyqlabs/qfiles  @status draft  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyfiles_module("version_dag", AperturePartition::Backend as u8,
+    make_qfiles_module("version_dag", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 120000, hash_ops: 4000, bandwidth: 30000,
             storage: 150000, observe_events: 5000, proofs: 80,
@@ -337,10 +337,10 @@ circuit version_dag_module() -> ModuleNode
 
 /// Register all 15 PolyFiles modules and their intra-graph REQUIRES dependency
 /// edges into the provided CsrStorage graph.
-circuit polyfiles_app_graph_register(
+circuit qfiles_app_graph_register(
     graph: CsrStorage
 ) -> CsrStorage
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision B
     @attested true
@@ -348,38 +348,38 @@ circuit polyfiles_app_graph_register(
     observe metrics: [registered_module_count, registered_edge_count]
     meters [compute_cycles, memory_bytes]
 {
-    let (g, id_chunk)           = module_graph_add_module(graph, polyfiles_chunk_module())
-    let (g, id_classify)        = module_graph_add_module(g, polyfiles_classify_module())
-    let (g, id_dedup)           = module_graph_add_module(g, polyfiles_dedup_module())
-    let (g, id_doc_edit)        = module_graph_add_module(g, polyfiles_document_edit_module())
-    let (g, id_encrypt)         = module_graph_add_module(g, polyfiles_encrypt_module())
-    let (g, id_eslm_classify)   = module_graph_add_module(g, polyfiles_eslm_classify_module())
-    let (g, id_manifest)        = module_graph_add_module(g, polyfiles_manifest_module())
-    let (g, id_metering)        = module_graph_add_module(g, polyfiles_metering_module())
-    let (g, id_health)          = module_graph_add_module(g, polyfiles_platform_health_module())
-    let (g, id_rbac)            = module_graph_add_module(g, polyfiles_rbac_module())
-    let (g, id_share)           = module_graph_add_module(g, polyfiles_share_module())
-    let (g, id_storage_router)  = module_graph_add_module(g, polyfiles_storage_router_module())
+    let (g, id_chunk)           = module_graph_add_module(graph, qfiles_chunk_module())
+    let (g, id_classify)        = module_graph_add_module(g, qfiles_classify_module())
+    let (g, id_dedup)           = module_graph_add_module(g, qfiles_dedup_module())
+    let (g, id_doc_edit)        = module_graph_add_module(g, qfiles_document_edit_module())
+    let (g, id_encrypt)         = module_graph_add_module(g, qfiles_encrypt_module())
+    let (g, id_eslm_classify)   = module_graph_add_module(g, qfiles_eslm_classify_module())
+    let (g, id_manifest)        = module_graph_add_module(g, qfiles_manifest_module())
+    let (g, id_metering)        = module_graph_add_module(g, qfiles_metering_module())
+    let (g, id_health)          = module_graph_add_module(g, qfiles_platform_health_module())
+    let (g, id_rbac)            = module_graph_add_module(g, qfiles_rbac_module())
+    let (g, id_share)           = module_graph_add_module(g, qfiles_share_module())
+    let (g, id_storage_router)  = module_graph_add_module(g, qfiles_storage_router_module())
     let (g, id_file_graph)      = module_graph_add_module(g, file_graph_module())
     let (g, id_share_graph)     = module_graph_add_module(g, share_graph_module())
     let (g, id_version_dag)     = module_graph_add_module(g, version_dag_module())
 
     // ── Intra-graph REQUIRES edges ──────────────────────────────────────────
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_chunk", "polyfiles_encrypt"), id_chunk, id_encrypt)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_dedup", "polyfiles_chunk"), id_dedup, id_chunk)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_classify", "polyfiles_manifest"), id_classify, id_manifest)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_eslm_classify", "polyfiles_classify"), id_eslm_classify, id_classify)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_document_edit", "polyfiles_manifest"), id_doc_edit, id_manifest)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_document_edit", "polyfiles_encrypt"), id_doc_edit, id_encrypt)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_manifest", "file_graph"), id_manifest, id_file_graph)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_metering", "polyfiles_manifest"), id_metering, id_manifest)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_platform_health", "polyfiles_metering"), id_health, id_metering)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_rbac", "file_graph"), id_rbac, id_file_graph)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_share", "polyfiles_rbac"), id_share, id_rbac)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_share", "share_graph"), id_share, id_share_graph)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_storage_router", "polyfiles_chunk"), id_storage_router, id_chunk)
-    let g = module_graph_add_edge(g, make_requires_edge("polyfiles_storage_router", "polyfiles_dedup"), id_storage_router, id_dedup)
-    let g = module_graph_add_edge(g, make_requires_edge("version_dag", "polyfiles_manifest"), id_version_dag, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_chunk", "qfiles_encrypt"), id_chunk, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_dedup", "qfiles_chunk"), id_dedup, id_chunk)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_classify", "qfiles_manifest"), id_classify, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_eslm_classify", "qfiles_classify"), id_eslm_classify, id_classify)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_document_edit", "qfiles_manifest"), id_doc_edit, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_document_edit", "qfiles_encrypt"), id_doc_edit, id_encrypt)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_manifest", "file_graph"), id_manifest, id_file_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_metering", "qfiles_manifest"), id_metering, id_manifest)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_platform_health", "qfiles_metering"), id_health, id_metering)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_rbac", "file_graph"), id_rbac, id_file_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_share", "qfiles_rbac"), id_share, id_rbac)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_share", "share_graph"), id_share, id_share_graph)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_storage_router", "qfiles_chunk"), id_storage_router, id_chunk)
+    let g = module_graph_add_edge(g, make_requires_edge("qfiles_storage_router", "qfiles_dedup"), id_storage_router, id_dedup)
+    let g = module_graph_add_edge(g, make_requires_edge("version_dag", "qfiles_manifest"), id_version_dag, id_manifest)
 
     g
 }
@@ -389,11 +389,11 @@ circuit polyfiles_app_graph_register(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Register EDGE_BRIDGE_TO edges linking PolyFiles to external graphs:
-/// PolyDocs (document editing), PolyKit (collaboration), eStream scatter-CAS.
-circuit polyfiles_register_bridge_edges(
+/// PolyDocs (document editing), QKit (collaboration), eStream scatter-CAS.
+circuit qfiles_register_bridge_edges(
     graph: CsrStorage
 ) -> CsrStorage
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision B
     @attested true
@@ -408,52 +408,52 @@ circuit polyfiles_register_bridge_edges(
     for i in 0..graph.num_nodes {
         let node_data = graph.node_data[i]
         let module = deserialize(node_data) as ModuleNode
-        if module.name == "polyfiles_document_edit" { doc_edit_id = i }
-        if module.name == "polyfiles_share" { share_id = i }
-        if module.name == "polyfiles_chunk" { chunk_id = i }
-        if module.name == "polyfiles_storage_router" { router_id = i }
+        if module.name == "qfiles_document_edit" { doc_edit_id = i }
+        if module.name == "qfiles_share" { share_id = i }
+        if module.name == "qfiles_chunk" { chunk_id = i }
+        if module.name == "qfiles_storage_router" { router_id = i }
     }
 
     let g = graph
 
-    // polyfiles_document_edit -> PolyDocs editor
+    // qfiles_document_edit -> PolyDocs editor
     if doc_edit_id != 0xFFFFFFFF as u32 {
-        let polydocs_bridge = InterAppEdge {
+        let qdocs_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYFILES_APP_LEX,
-            source_module: "polyfiles_document_edit",
-            target_lex: "polylabs/polydocs",
-            target_module: "polydocs_editor",
+            source_module: "qfiles_document_edit",
+            target_lex: "polyqlabs/qdocs",
+            target_module: "qdocs_editor",
             bridge_scope: BridgeScope::Product as u8,
             shared_fields: ["document_ops", "crdt_state", "version_id"],
             redacted_fields: [],
             bilateral_confirmed: false,
         }
-        g = module_graph_add_bridge_edge(g, polydocs_bridge, doc_edit_id)
+        g = module_graph_add_bridge_edge(g, qdocs_bridge, doc_edit_id)
     }
 
-    // polyfiles_share -> PolyKit collaboration
+    // qfiles_share -> QKit collaboration
     if share_id != 0xFFFFFFFF as u32 {
-        let polykit_bridge = InterAppEdge {
+        let qkit_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYFILES_APP_LEX,
-            source_module: "polyfiles_share",
-            target_lex: "polylabs/polykit",
-            target_module: "polykit_collaboration",
+            source_module: "qfiles_share",
+            target_lex: "polyqlabs/qkit",
+            target_module: "qkit_collaboration",
             bridge_scope: BridgeScope::Product as u8,
             shared_fields: ["share_token", "acl_policy", "invite_state"],
             redacted_fields: [],
             bilateral_confirmed: false,
         }
-        g = module_graph_add_bridge_edge(g, polykit_bridge, share_id)
+        g = module_graph_add_bridge_edge(g, qkit_bridge, share_id)
     }
 
-    // polyfiles_chunk -> eStream scatter-CAS
+    // qfiles_chunk -> eStream scatter-CAS
     if chunk_id != 0xFFFFFFFF as u32 {
         let scatter_chunk_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYFILES_APP_LEX,
-            source_module: "polyfiles_chunk",
+            source_module: "qfiles_chunk",
             target_lex: "core/scatter_cas",
             target_module: "scatter_cas_core",
             bridge_scope: BridgeScope::Platform as u8,
@@ -464,12 +464,12 @@ circuit polyfiles_register_bridge_edges(
         g = module_graph_add_bridge_edge(g, scatter_chunk_bridge, chunk_id)
     }
 
-    // polyfiles_storage_router -> eStream scatter-CAS
+    // qfiles_storage_router -> eStream scatter-CAS
     if router_id != 0xFFFFFFFF as u32 {
         let scatter_router_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYFILES_APP_LEX,
-            source_module: "polyfiles_storage_router",
+            source_module: "qfiles_storage_router",
             target_lex: "core/scatter_cas",
             target_module: "scatter_cas_core",
             bridge_scope: BridgeScope::Platform as u8,
@@ -488,30 +488,30 @@ circuit polyfiles_register_bridge_edges(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-circuit test_polyfiles_app_graph_register()
-    lex polylabs/polyfiles
+circuit test_qfiles_app_graph_register()
+    lex polyqlabs/qfiles
 {
     let empty_graph = CsrStorage { num_nodes: 0, node_data: [], edge_data: [], bridge_data: [] }
-    let g = polyfiles_app_graph_register(empty_graph)
+    let g = qfiles_app_graph_register(empty_graph)
     assert g.num_nodes == 15, "expected 15 modules"
     assert len(g.edge_data) == 15, "expected 15 intra-graph edges"
 }
 
 #[test]
-circuit test_polyfiles_bridge_edges()
-    lex polylabs/polyfiles
+circuit test_qfiles_bridge_edges()
+    lex polyqlabs/qfiles
 {
     let empty_graph = CsrStorage { num_nodes: 0, node_data: [], edge_data: [], bridge_data: [] }
-    let g = polyfiles_app_graph_register(empty_graph)
-    let g = polyfiles_register_bridge_edges(g)
+    let g = qfiles_app_graph_register(empty_graph)
+    let g = qfiles_register_bridge_edges(g)
     assert len(g.bridge_data) == 4, "expected 4 bridge edges"
 }
 
 #[test]
-circuit test_make_polyfiles_module_defaults()
-    lex polylabs/polyfiles
+circuit test_make_qfiles_module_defaults()
+    lex polyqlabs/qfiles
 {
-    let m = make_polyfiles_module("test_module", AperturePartition::Backend as u8,
+    let m = make_qfiles_module("test_module", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 100, hash_ops: 10, bandwidth: 50,
             storage: 50, observe_events: 10, proofs: 1,

@@ -4,7 +4,7 @@
 /// Includes noise filter with 4 suppression rules and 4 signal rules,
 /// plus 2 SME panels for tiering optimization and model calibration.
 
-lex polylabs/polyfiles
+lex polyqlabs/qfiles
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -18,7 +18,7 @@ import "core/intelligence/ce_meaning.fl" {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const POLYFILES_CE_LEX: string = "polylabs/polyfiles"
+const POLYFILES_CE_LEX: string = "polyqlabs/qfiles"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // §1  Meaning Domains
@@ -27,7 +27,7 @@ const POLYFILES_CE_LEX: string = "polylabs/polyfiles"
 /// Hot/warm/cold tiering decisions and access frequency distributions.
 /// CE learns per-user temporal patterns to predict tier migrations.
 circuit storage_access_patterns_domain() -> MeaningDomain
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
@@ -50,7 +50,7 @@ circuit storage_access_patterns_domain() -> MeaningDomain
 /// Dedup ratio trends across scatter-CAS namespace. CE detects declining
 /// ratios indicating content drift and recommends re-chunking strategies.
 circuit storage_dedup_efficiency_domain() -> MeaningDomain
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
@@ -72,7 +72,7 @@ circuit storage_dedup_efficiency_domain() -> MeaningDomain
 /// ESLM classification accuracy against ground truth labels. CE calibrates
 /// confidence thresholds and detects model drift.
 circuit storage_classification_domain() -> MeaningDomain
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
@@ -96,8 +96,8 @@ circuit storage_classification_domain() -> MeaningDomain
 // §2  Noise Filter
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polyfiles_noise_filter() -> NoiseFilter
-    lex polylabs/polyfiles
+circuit qfiles_noise_filter() -> NoiseFilter
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
@@ -124,12 +124,12 @@ circuit polyfiles_noise_filter() -> NoiseFilter
 
 /// Storage tiering optimization: weighs cost savings against latency risk.
 circuit storage_tiering_panel() -> SMEPanel
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
     SMEPanel {
-        panel_id: "polyfiles/storage_tiering_optimization",
+        panel_id: "qfiles/storage_tiering_optimization",
         lex_namespace: POLYFILES_CE_LEX,
         trigger: "access_pattern_shift OR cost_per_gb_exceeds_threshold",
         config: SMEPanelConfig {
@@ -145,12 +145,12 @@ circuit storage_tiering_panel() -> SMEPanel
 
 /// Classification model calibration: decides retrain vs keep current model.
 circuit classification_calibration_panel() -> SMEPanel
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
     @status draft
     @precision C
 {
     SMEPanel {
-        panel_id: "polyfiles/classification_model_calibration",
+        panel_id: "qfiles/classification_model_calibration",
         lex_namespace: POLYFILES_CE_LEX,
         trigger: "eslm_accuracy_below_95pct OR novel_file_type_cluster",
         config: SMEPanelConfig {
@@ -170,8 +170,8 @@ circuit classification_calibration_panel() -> SMEPanel
 
 /// Register all PolyFiles CE components: 3 meaning domains, noise filter,
 /// and 2 SME panels under the product lex namespace.
-circuit polyfiles_register_ce(product_lex: string) -> bool
-    lex polylabs/polyfiles
+circuit qfiles_register_ce(product_lex: string) -> bool
+    lex polyqlabs/qfiles
     @status draft
     @precision B
     @attested true
@@ -184,7 +184,7 @@ circuit polyfiles_register_ce(product_lex: string) -> bool
     let ok = ok && ce_register_meaning_domain(product_lex, storage_dedup_efficiency_domain())
     let ok = ok && ce_register_meaning_domain(product_lex, storage_classification_domain())
 
-    let ok = ok && ce_register_noise_filter(product_lex, polyfiles_noise_filter())
+    let ok = ok && ce_register_noise_filter(product_lex, qfiles_noise_filter())
 
     let ok = ok && ce_register_sme_panel(product_lex, storage_tiering_panel())
     let ok = ok && ce_register_sme_panel(product_lex, classification_calibration_panel())
@@ -198,7 +198,7 @@ circuit polyfiles_register_ce(product_lex: string) -> bool
 
 #[test]
 circuit test_meaning_domains_valid()
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
 {
     let d1 = storage_access_patterns_domain()
     let d2 = storage_dedup_efficiency_domain()
@@ -213,21 +213,21 @@ circuit test_meaning_domains_valid()
 
 #[test]
 circuit test_noise_filter_counts()
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
 {
-    let nf = polyfiles_noise_filter()
+    let nf = qfiles_noise_filter()
     assert len(nf.suppression_rules) == 4, "expected 4 suppression rules"
     assert len(nf.signal_rules) == 4, "expected 4 signal rules"
 }
 
 #[test]
 circuit test_sme_panels_configured()
-    lex polylabs/polyfiles
+    lex polyqlabs/qfiles
 {
     let p1 = storage_tiering_panel()
     let p2 = classification_calibration_panel()
-    assert p1.panel_id == "polyfiles/storage_tiering_optimization"
-    assert p2.panel_id == "polyfiles/classification_model_calibration"
+    assert p1.panel_id == "qfiles/storage_tiering_optimization"
+    assert p2.panel_id == "qfiles/classification_model_calibration"
     assert p1.config.min_panelists >= 2
     assert p2.config.confidence_threshold_bps >= 7500
 }

@@ -1,10 +1,10 @@
-// Poly Files Metering — 8-dimension resource metering for file operations
+// Q Files Metering — 8-dimension resource metering for file operations
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/metering
+//   esn/global/org/polyqlabs/files/metering
 //     └── sub_lex user fan_in  ← per-user metering; aggregates fan up
 //
-// Maps every Poly Files operation to the 8 standard PolyKit metering
+// Maps every Q Files operation to the 8 standard QKit metering
 // dimensions (E/H/B/S/O/P/C/M). Each operation activates a specific
 // subset of dimensions based on resource consumption profile:
 //
@@ -13,7 +13,7 @@
 //   search   → [O, M]         git_push → [B, S, O]
 //   git_clone → [B, O]
 
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
 
 type UserId = bytes(16)
 type FileId = bytes(32)
@@ -35,7 +35,7 @@ data UploadMetrics : files v1 {
     erasure_coding_cycles: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -47,7 +47,7 @@ data DownloadMetrics : files v1 {
     reassembly_cycles: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -61,7 +61,7 @@ data ScatterMetrics : files v1 {
     fpga_cycles: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -69,13 +69,13 @@ data ScatterMetrics : files v1 {
 
 data QuotaStatus : files v1 {
     user_id: UserId,
-    current: polykit_metering::DimensionValues,
-    limits: polykit_metering::DimensionValues,
-    violations: [polykit_metering::MeteringDimension; 8],
+    current: qkit_metering::DimensionValues,
+    limits: qkit_metering::DimensionValues,
+    violations: [qkit_metering::MeteringDimension; 8],
     within_quota: bool,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         redact [user_id]
         infer on_write
@@ -86,11 +86,11 @@ data UsageSummary : files v1 {
     user_id: UserId,
     period_start_ms: u64,
     period_end_ms: u64,
-    totals: polykit_metering::DimensionValues,
+    totals: qkit_metering::DimensionValues,
     operation_counts: OperationCounts,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         redact [user_id]
         infer on_write
@@ -107,23 +107,23 @@ data OperationCounts : files v1 {
     git_clones: u64,
 }
     store kv
-    govern lex global/org/polylabs/files/metering
+    govern lex global/org/polyqlabs/files/metering
     cortex {
         infer on_write
         on_anomaly alert "files-team"
     }
 
-stream metering_events: event<polykit_metering::MeteringRecord>
+stream metering_events: event<qkit_metering::MeteringRecord>
     | throttle 2000/s burst 5000
-    | topic "polylabs.files.metering.{user_id}"
+    | topic "polyqlabs.files.metering.{user_id}"
     | retention permanent
     | hash_chain true
 
 // --- Meter an upload operation: [B, S, O, E] ---
-circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_metering::MeteringRecord
+circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/metering {
+    lex global/org/polyqlabs/files/metering {
         sub_lex user fan_in
     }
     @precision C
@@ -138,7 +138,7 @@ circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_meterin
     let storage = metrics.file_size * u64(metrics.chunk_count)
     let energy = metrics.encryption_cycles + metrics.erasure_coding_cycles
 
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: energy,
         hashes: 0,
         bandwidth: bandwidth,
@@ -149,7 +149,7 @@ circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_meterin
         mpc_sessions: 0,
     }
 
-    let record = polykit_metering::record_usage(user_id, "upload", dims)
+    let record = qkit_metering::record_usage(user_id, "upload", dims)
 
     eslite_insert("metering_upload", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
     emit(metering_events, record)
@@ -157,10 +157,10 @@ circuit meter_upload(user_id: UserId, metrics: UploadMetrics) -> polykit_meterin
 }
 
 // --- Meter a download operation: [B, O] ---
-circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_metering::MeteringRecord
+circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/metering {
+    lex global/org/polyqlabs/files/metering {
         sub_lex user fan_in
     }
     @precision C
@@ -173,7 +173,7 @@ circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_met
 {
     let bandwidth = metrics.file_size + u64(metrics.shard_count) * 64
 
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 0,
         hashes: 0,
         bandwidth: bandwidth,
@@ -184,17 +184,17 @@ circuit meter_download(user_id: UserId, metrics: DownloadMetrics) -> polykit_met
         mpc_sessions: 0,
     }
 
-    let record = polykit_metering::record_usage(user_id, "download", dims)
+    let record = qkit_metering::record_usage(user_id, "download", dims)
     eslite_insert("metering_download", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
     emit(metering_events, record)
     record
 }
 
 // --- Meter a distribute operation: [S, B, H] ---
-circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_metering::MeteringRecord
+circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> qkit_metering::MeteringRecord
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/metering {
+    lex global/org/polyqlabs/files/metering {
         sub_lex user fan_in
     }
     @precision C
@@ -209,7 +209,7 @@ circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_meter
     let bandwidth = metrics.total_shard_bytes + u64(metrics.node_count) * 256
     let hardware = metrics.fpga_cycles + u64(metrics.vrf_hashes) * 1024
 
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 0,
         hashes: u64(metrics.vrf_hashes),
         bandwidth: bandwidth,
@@ -220,17 +220,17 @@ circuit meter_scatter(user_id: UserId, metrics: ScatterMetrics) -> polykit_meter
         mpc_sessions: 0,
     }
 
-    let record = polykit_metering::record_usage(user_id, "distribute", dims)
+    let record = qkit_metering::record_usage(user_id, "distribute", dims)
     eslite_insert("metering_scatter", user_id ++ u64_to_bytes(record.timestamp_ms), dims)
     emit(metering_events, record)
     record
 }
 
 // --- Check if user is within quota for all dimensions ---
-circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> QuotaStatus
+circuit check_quota(user_id: UserId, tier: qkit_metering::TierLimits) -> QuotaStatus
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/metering
+    lex global/org/polyqlabs/files/metering
     @precision C
     @observe metrics: [quota_checks, quota_violations, quota_ok]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.05 }
@@ -238,8 +238,8 @@ circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> Quot
     property safety "quota_enforced" { violations implies !within_quota }
     wasm_abi [eslite_query]
 {
-    let current = polykit_metering::get_usage_summary(user_id)
-    let violations = polykit_metering::check_limits(current, tier)
+    let current = qkit_metering::get_usage_summary(user_id)
+    let violations = qkit_metering::check_limits(current, tier)
 
     let has_violation = false
     for v in violations {
@@ -259,7 +259,7 @@ circuit check_quota(user_id: UserId, tier: polykit_metering::TierLimits) -> Quot
 circuit get_usage(user_id: UserId, period_start_ms: u64, period_end_ms: u64) -> UsageSummary
     profile poly_framework_standard
     target lattice
-    lex global/org/polylabs/files/metering
+    lex global/org/polyqlabs/files/metering
     @precision C
     @observe metrics: [usage_queries, usage_query_latency_ms]
     monitor "usage_query_latency" { usage_query_latency_ms < 100 }
@@ -267,7 +267,7 @@ circuit get_usage(user_id: UserId, period_start_ms: u64, period_end_ms: u64) -> 
     property liveness "usage_eventually_returned" { eventually(result != null) }
     wasm_abi [eslite_query]
 {
-    let totals = polykit_metering::get_usage_summary(user_id)
+    let totals = qkit_metering::get_usage_summary(user_id)
 
     let uploads = eslite_query("metering_upload_count", user_id, period_start_ms, period_end_ms)
     let downloads = eslite_query("metering_download_count", user_id, period_start_ms, period_end_ms)

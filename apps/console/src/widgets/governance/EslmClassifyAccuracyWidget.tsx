@@ -10,7 +10,7 @@
  *            CLASSIFICATION_FILTER (filters accuracy by classification)
  *            FILTER_RESET (clears filter)
  *
- * Lex stream: polylabs.data.eslm.classification
+ * Lex stream: polyqlabs.data.eslm.classification
  * Required role: polydata-operator
  */
 
@@ -26,7 +26,7 @@ export default function EslmClassifyAccuracyWidget() {
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
   const { data: liveData, status } = useStreamSubscription(
-    'polylabs.data.eslm.classification',
+    'polyqlabs.data.eslm.classification',
     { filter: { type: 'accuracy_summary' } },
   );
 

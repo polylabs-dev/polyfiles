@@ -3,7 +3,7 @@
 **Version**: 3.0
 **Date**: February 2026
 **Platform**: eStream v0.8.3
-**Upstream**: PolyKit v0.3.0, eStream scatter-cas, es-git, graph/DAG constructs
+**Upstream**: QKit v0.3.0, eStream scatter-cas, es-git, graph/DAG constructs
 **Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
@@ -17,24 +17,24 @@ Poly Data is a post-quantum encrypted, scatter-distributed file storage and vers
 | Area | v2.0 | v3.0 |
 |------|------|------|
 | CAS | Custom implementation planned | eStream `scatter-cas` runtime |
-| Version control | Custom `poly-data-version` circuit | `dag version_history` (mirrors `commit_history` from GRAPH_SPEC) |
+| Version control | Custom `q-data-version` circuit | `dag version_history` (mirrors `commit_history` from GRAPH_SPEC) |
 | File metadata | Flat streams | `graph file_registry` with typed overlays |
 | Sharing | Flat ACL stream | `graph share_network` with typed edges |
 | poly-git | Custom git remote helper | Thin wrapper over `es-git` |
-| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
-| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with QKit profiles |
+| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via QKit |
 | Platform | eStream v0.8.1 | eStream v0.8.3 |
 
 ---
 
 ## Zero-Linkage Privacy
 
-Poly Data operates under the Poly Labs zero-linkage privacy architecture:
+Poly Data operates under the PolyQ Labs zero-linkage privacy architecture:
 
-- **HKDF context**: `poly-data-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
-- **Lex namespace**: `esn/global/org/polylabs/data` — completely isolated from other product namespaces
-- **StreamSight**: Telemetry stays within `polylabs.data.*` lex paths
-- **Metering**: Own `metering_graph` instance under `polylabs.data.metering` lex
+- **HKDF context**: `q-data-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
+- **Lex namespace**: `esn/global/org/polyqlabs/data` — completely isolated from other product namespaces
+- **StreamSight**: Telemetry stays within `polyqlabs.data.*` lex paths
+- **Metering**: Own `metering_graph` instance under `polyqlabs.data.metering` lex
 - **Billing**: Tier checked via blinded token status, not cross-product identity
 
 ---
@@ -47,7 +47,7 @@ Poly Data operates under the Poly Labs zero-linkage privacy architecture:
 SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed to JS)
                                             │
                                             ▼
-                                   HKDF-SHA3-256(master_seed, "poly-data-v1")
+                                   HKDF-SHA3-256(master_seed, "q-data-v1")
                                             │
                                             ├── ML-DSA-87 signing key pair
                                             │   (file manifests, commits, ACL changes)
@@ -62,7 +62,7 @@ SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed t
 user_id = SHA3-256(spark_ml_dsa_87_public_key)[0..16]   # 16-byte truncated hash
 ```
 
-All stream topics, file ownership, and ACLs reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers. This `user_id` is unique to Poly Data and cannot be linked to identities in other Poly products.
+All stream topics, file ownership, and ACLs reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers. This `user_id` is unique to Poly Data and cannot be linked to identities in other Q products.
 
 ---
 
@@ -80,8 +80,8 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │  ┌──────┴────────────────┴──────────────┴───────────────┴────────┐  │
 │  │              FastLang Circuits (WASM via .escd)                  │  │
 │  │                                                                 │  │
-│  │  polyfiles_encrypt.fl │ polyfiles_chunk.fl │ polyfiles_classify.fl │  │
-│  │  polyfiles_manifest.fl │ polyfiles_eslm_classify.fl               │  │
+│  │  qfiles_encrypt.fl │ qfiles_chunk.fl │ qfiles_classify.fl │  │
+│  │  qfiles_manifest.fl │ qfiles_eslm_classify.fl               │  │
 │  │  (all ML-DSA-87 signed .escd packages, StreamSight-annotated)  │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
@@ -91,15 +91,15 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │  │  graph file_registry    — file system as a graph                  │  │
 │  │  dag version_history    — commit-like version DAG                 │  │
 │  │  graph share_network    — ACL + ephemeral link sharing            │  │
-│  │  graph metering_graph   — per-app 8D usage (from PolyKit)        │  │
-│  │  graph user_graph       — per-product identity (from PolyKit)     │  │
+│  │  graph metering_graph   — per-app 8D usage (from QKit)        │  │
+│  │  graph user_graph       — per-product identity (from QKit)     │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
 │  │  ESLite (Client-Side State)                                       │  │
-│  │  /polyfiles/files/* — file metadata + manifest cache              │  │
-│  │  /polyfiles/index/* — encrypted search index                      │  │
-│  │  /polyfiles/offline/* — offline manifest + encrypted cache        │  │
+│  │  /qfiles/files/* — file metadata + manifest cache              │  │
+│  │  /qfiles/index/* — encrypted search index                      │  │
+│  │  /qfiles/offline/* — offline manifest + encrypted cache        │  │
 │  └──────────────────────────┬──────────────────────────────────────┘  │
 │                              │                                        │
 │  ┌──────────────────────────┴──────────────────────────────────────┐  │
@@ -116,8 +116,8 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 │  ┌────────────────────────────┴─────────────────────────────────────┐ │
 │  │  Lattice-Hosted Circuits                                           │ │
 │  │                                                                    │ │
-│  │  polyfiles_storage_router.fl │ polyfiles_share.fl                   │ │
-│  │  polyfiles_metering.fl       │ scatter-cas runtime                 │ │
+│  │  qfiles_storage_router.fl │ qfiles_share.fl                   │ │
+│  │  qfiles_metering.fl       │ scatter-cas runtime                 │ │
 │  └────┬───────────┬──────────────┬──────────────────────────────────┘ │
 │       │           │              │                                     │
 │  ┌────┴──────────────────────────────────────────────────────────┐   │
@@ -131,7 +131,7 @@ All stream topics, file ownership, and ACLs reference this SPARK-derived `user_i
 
 ## Graph/DAG Constructs
 
-### File Registry Graph (`polyfiles_file_graph.fl`)
+### File Registry Graph (`qfiles_file_graph.fl`)
 
 The file system is modeled as a typed graph. Files, folders, and users are nodes; containment, ownership, and sharing are edges. Overlays provide real-time state (classification, scatter health, version count) without mutating the base graph.
 
@@ -151,7 +151,7 @@ data FileNode : app v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -169,7 +169,7 @@ data FolderNode : app v1 {
     updated_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -216,7 +216,7 @@ series file_series: file_registry
 
 Key circuits: `create_file`, `create_folder`, `move_file`, `delete_file`, `reclassify`, `list_folder`.
 
-### Version History DAG (`polyfiles_version_dag.fl`)
+### Version History DAG (`qfiles_version_dag.fl`)
 
 File versioning is modeled as a DAG, mirroring the `commit_history` pattern from the GRAPH_SPEC. Each version is a node; parent relationships are edges. This is backed by `scatter-cas` for content-addressable storage.
 
@@ -237,7 +237,7 @@ data VersionNode : app v1 {
     created_ms: u64,
 }
     store dag
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         obfuscate [author_id]
         infer on_write
@@ -292,7 +292,7 @@ series version_series: version_history
 
 Key circuits: `create_version`, `list_versions`, `diff_versions`, `merge_versions`, `rollback`.
 
-### Share Network Graph (`polyfiles_share_graph.fl`)
+### Share Network Graph (`qfiles_share_graph.fl`)
 
 Sharing relationships are a graph. Users, files, and ephemeral links are nodes; share permissions are edges with typed access levels.
 
@@ -307,7 +307,7 @@ data ShareUserNode : app v1 {
     joined_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         redact [email]
         obfuscate [user_id]
@@ -325,7 +325,7 @@ data SharedFileNode : app v1 {
     created_ms: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -343,7 +343,7 @@ data EphemeralLinkNode : app v1 {
     state: ShareState,
 }
     store graph
-    govern lex esn/global/org/polylabs/files
+    govern lex esn/global/org/polyqlabs/files
     cortex {
         redact [link_secret]
         infer on_write
@@ -417,7 +417,7 @@ Key circuits: `grant_access`, `revoke_access`, `create_ephemeral_link`, `consume
 
 ## Stratum & Cortex Integration
 
-All graph and DAG data types in Poly Files use **Stratum storage bindings** (`store graph`, `store dag`) and **Cortex AI governance** (`cortex {}` blocks) to enforce field-level visibility, inference triggers, and anomaly feedback loops. This replaces the older `type X = struct` pattern with `data X : app v1` declarations that compose storage, lex governance, and AI policy at the type level.
+All graph and DAG data types in Q Files use **Stratum storage bindings** (`store graph`, `store dag`) and **Cortex AI governance** (`cortex {}` blocks) to enforce field-level visibility, inference triggers, and anomaly feedback loops. This replaces the older `type X = struct` pattern with `data X : app v1` declarations that compose storage, lex governance, and AI policy at the type level.
 
 ### Stratum Storage Bindings
 
@@ -425,12 +425,12 @@ Each `data` declaration specifies which stratum backend stores its instances:
 
 | Data Type | Stratum | Lex Namespace | Backing Structure |
 |-----------|---------|---------------|-------------------|
-| `FileNode` | `store graph` | `esn/global/org/polylabs/files` | `file_registry` graph, CSR storage (bram → ddr → nvme) |
-| `FolderNode` | `store graph` | `esn/global/org/polylabs/files` | `file_registry` graph, CSR storage |
-| `VersionNode` | `store dag` | `esn/global/org/polylabs/files` | `version_history` DAG, merkle_csr storage (bram → ddr → nvme) |
-| `ShareUserNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage |
-| `SharedFileNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage |
-| `EphemeralLinkNode` | `store graph` | `esn/global/org/polylabs/files` | `share_network` graph, CSR storage (TTL-bounded) |
+| `FileNode` | `store graph` | `esn/global/org/polyqlabs/files` | `file_registry` graph, CSR storage (bram → ddr → nvme) |
+| `FolderNode` | `store graph` | `esn/global/org/polyqlabs/files` | `file_registry` graph, CSR storage |
+| `VersionNode` | `store dag` | `esn/global/org/polyqlabs/files` | `version_history` DAG, merkle_csr storage (bram → ddr → nvme) |
+| `ShareUserNode` | `store graph` | `esn/global/org/polyqlabs/files` | `share_network` graph, CSR storage |
+| `SharedFileNode` | `store graph` | `esn/global/org/polyqlabs/files` | `share_network` graph, CSR storage |
+| `EphemeralLinkNode` | `store graph` | `esn/global/org/polyqlabs/files` | `share_network` graph, CSR storage (TTL-bounded) |
 
 All graph storage uses three-tier CSR (Compressed Sparse Row):
 - **`hot @bram`** — active working set in block RAM (FPGA) or L1/L2 cache
@@ -468,13 +468,13 @@ Each `cortex {}` block specifies when inference runs and where anomaly alerts ro
 | `EphemeralLinkNode` | `infer on_write` | `on_anomaly alert "files-security"` | `files-security` |
 
 **Trigger modes**:
-- `on_write` — inference runs synchronously on every insert/update. Used for all Poly Files data types to catch anomalies at write time (unusual file sizes, rapid reclassification, suspicious share patterns).
-- `on_read` — inference runs on read (not currently used in Poly Files; suitable for lazy-evaluated classification suggestions).
+- `on_write` — inference runs synchronously on every insert/update. Used for all Q Files data types to catch anomalies at write time (unusual file sizes, rapid reclassification, suspicious share patterns).
+- `on_read` — inference runs on read (not currently used in Q Files; suitable for lazy-evaluated classification suggestions).
 
 **Feedback handlers**:
-- `alert <team>` — routes anomaly to the named team's incident feed via StreamSight (`lex://estream/apps/polylabs.files/incidents`)
+- `alert <team>` — routes anomaly to the named team's incident feed via StreamSight (`lex://estream/apps/polyqlabs.files/incidents`)
 - `store` — persists the anomaly score and explanation in the series for audit (implicit via `series ... witness_attest true`)
-- `auto_apply` — automatically applies the Cortex recommendation (e.g., auto-reclassify). Not yet enabled for Poly Files; requires human-in-the-loop review gate.
+- `auto_apply` — automatically applies the Cortex recommendation (e.g., auto-reclassify). Not yet enabled for Q Files; requires human-in-the-loop review gate.
 
 ### Graph-Level AI Feeds & Observe Thresholds
 
@@ -548,9 +548,9 @@ scatter-cas RefStore
 `poly-git` is now a thin wrapper over eStream's `es-git` CLI (`estream/tools/es-git/`). It adds classification-driven scatter policy as an overlay on the commit DAG.
 
 ```bash
-git remote add poly poly-git://org.polygit/my-repo
+git remote add poly poly-git://org.qgit/my-repo
 git push poly main      # → es-git push with classification overlay
-git clone poly-git://org.polygit/my-repo
+git clone poly-git://org.qgit/my-repo
 git pull poly main
 ```
 
@@ -560,7 +560,7 @@ es-git provides: `init`, `add`, `commit`, `log`, `status`, `branch`, `checkout`,
 
 ## FastLang Circuits
 
-All circuits are written in FastLang `.fl` using PolyKit profiles. The build pipeline is:
+All circuits are written in FastLang `.fl` using QKit profiles. The build pipeline is:
 
 ```bash
 estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-budget
@@ -570,18 +570,18 @@ estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-bu
 
 | Circuit | File | Purpose | Size Budget |
 |---------|------|---------|-------------|
-| `polyfiles_encrypt` | `polyfiles_encrypt.fl` | ML-KEM-1024 key gen, AES-256-GCM chunk encryption | ≤128 KB |
-| `polyfiles_chunk` | `polyfiles_chunk.fl` | 4 MB chunking, erasure coding, reassembly | ≤128 KB |
-| `polyfiles_classify` | `polyfiles_classify.fl` | Classification assignment, policy lookup | ≤128 KB |
-| `polyfiles_manifest` | `polyfiles_manifest.fl` | Manifest build, ML-DSA-87 signing, verification | ≤128 KB |
-| `polyfiles_eslm_classify` | `polyfiles_eslm_classify.fl` | ESLM content auto-classification | ≤128 KB |
+| `qfiles_encrypt` | `qfiles_encrypt.fl` | ML-KEM-1024 key gen, AES-256-GCM chunk encryption | ≤128 KB |
+| `qfiles_chunk` | `qfiles_chunk.fl` | 4 MB chunking, erasure coding, reassembly | ≤128 KB |
+| `qfiles_classify` | `qfiles_classify.fl` | Classification assignment, policy lookup | ≤128 KB |
+| `qfiles_manifest` | `qfiles_manifest.fl` | Manifest build, ML-DSA-87 signing, verification | ≤128 KB |
+| `qfiles_eslm_classify` | `qfiles_eslm_classify.fl` | ESLM content auto-classification | ≤128 KB |
 
-All circuits compose PolyKit:
+All circuits compose QKit:
 ```fastlang
-circuit polyfiles_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes) -> bytes
+circuit qfiles_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes) -> bytes
     profile poly_framework_sensitive
-    composes: [polykit_identity, polykit_metering, polykit_sanitize]
-    lex esn/global/org/polylabs/data/encrypt
+    composes: [qkit_identity, qkit_metering, qkit_sanitize]
+    lex esn/global/org/polyqlabs/data/encrypt
     constant_time true
     observe metrics: [encrypt_ops, chunk_size, latency_ns]
 {
@@ -593,36 +593,36 @@ circuit polyfiles_encrypt(user_id: bytes(16), file_key: bytes(32), chunk: bytes)
 
 | Circuit | File | Purpose |
 |---------|------|---------|
-| `polyfiles_storage_router` | `polyfiles_storage_router.fl` | Scatter policy enforcement, VRF shard distribution |
-| `polyfiles_share` | `polyfiles_share.fl` | ACL enforcement, ephemeral link validation |
-| `polyfiles_metering` | `polyfiles_metering.fl` | Per-product 8D metering (isolated) |
+| `qfiles_storage_router` | `qfiles_storage_router.fl` | Scatter policy enforcement, VRF shard distribution |
+| `qfiles_share` | `qfiles_share.fl` | ACL enforcement, ephemeral link validation |
+| `qfiles_metering` | `qfiles_metering.fl` | Per-product 8D metering (isolated) |
 
 ---
 
 ## File Upload Flow
 
 1. User selects file(s) in Poly Data client
-2. **`polyfiles_classify` circuit** (WASM):
+2. **`qfiles_classify` circuit** (WASM):
    - Checks `.polyclassification`, folder inheritance, enterprise policy
-   - Falls through to `polyfiles_eslm_classify` for AI suggestion if no explicit tag
-3. **`polyfiles_encrypt` circuit** (WASM):
+   - Falls through to `qfiles_eslm_classify` for AI suggestion if no explicit tag
+3. **`qfiles_encrypt` circuit** (WASM):
    - Generates random AES-256-GCM per-file key
    - Wraps per-file key with user's SPARK ML-KEM-1024 public key
-4. **`polyfiles_chunk` circuit** (WASM):
+4. **`qfiles_chunk` circuit** (WASM):
    - Chunks large files (4 MB chunks)
    - Encrypts each chunk with per-file AES-256-GCM key
    - Erasure-codes chunks (k-of-n based on classification)
-5. **`polyfiles_manifest` circuit** (WASM):
+5. **`qfiles_manifest` circuit** (WASM):
    - Constructs scatter-cas `Commit` object: chunk hashes, shard map, classification
    - Signs with user's SPARK ML-DSA-87 signing key
-6. Client emits to `polylabs.data.{user_id}.upload` via eStream wire protocol
-7. **`polyfiles_storage_router` circuit** (lattice):
+6. Client emits to `polyqlabs.data.{user_id}.upload` via eStream wire protocol
+7. **`qfiles_storage_router` circuit** (lattice):
    - Validates ML-DSA-87 signature
    - Enforces scatter policy per classification
    - Distributes shards via VRF across providers
    - Records version in `version_history` DAG
    - Updates `file_registry` graph overlays
-8. Confirmation published to `polylabs.data.{user_id}.upload.confirm`
+8. Confirmation published to `polyqlabs.data.{user_id}.upload.confirm`
 9. Client ESLite updates local cache
 
 ---
@@ -652,7 +652,7 @@ Owner signs ACL change with SPARK ML-DSA-87
   → share_lifecycle: PENDING → ACTIVE (guard: acl_signed)
   → SharedWithEdge created in share_network graph
   → Per-file key re-wrapped with recipient's SPARK ML-KEM-1024 public key
-  → Recipient subscribes to polylabs.data.{recipient_id}.share.incoming
+  → Recipient subscribes to polyqlabs.data.{recipient_id}.share.incoming
 ```
 
 ### Ephemeral Link Sharing
@@ -668,18 +668,18 @@ Ephemeral links are `EphemeralLinkNode` in the `share_network` graph with time-b
 
 ## StreamSight Observability
 
-Per-product isolated telemetry within the `polylabs.data.*` lex namespace.
+Per-product isolated telemetry within the `polyqlabs.data.*` lex namespace.
 
 ### Telemetry Stream Paths
 
 ```
-lex://estream/apps/polylabs.data/telemetry
-lex://estream/apps/polylabs.data/telemetry/sli
-lex://estream/apps/polylabs.data/metrics/baseline
-lex://estream/apps/polylabs.data/metrics/deviations
-lex://estream/apps/polylabs.data/incidents
-lex://estream/apps/polylabs.data/eslm/classification
-lex://estream/apps/polylabs.data/eslm/recommendation
+lex://estream/apps/polyqlabs.data/telemetry
+lex://estream/apps/polyqlabs.data/telemetry/sli
+lex://estream/apps/polyqlabs.data/metrics/baseline
+lex://estream/apps/polyqlabs.data/metrics/deviations
+lex://estream/apps/polyqlabs.data/incidents
+lex://estream/apps/polyqlabs.data/eslm/classification
+lex://estream/apps/polyqlabs.data/eslm/recommendation
 ```
 
 No telemetry path references any other Poly product. StreamSight baseline gate learns per-classification latency distributions and flags deviations.
@@ -714,7 +714,7 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 | RESTRICTED | NO offline — streaming view only |
 | SOVEREIGN | NO offline — HSM-gated streaming view |
 
-Offline copies stored in ESLite (`/polyfiles/offline/*`), encrypted with device-bound SPARK key.
+Offline copies stored in ESLite (`/qfiles/offline/*`), encrypted with device-bound SPARK key.
 
 ---
 
@@ -723,18 +723,18 @@ Offline copies stored in ESLite (`/polyfiles/offline/*`), encrypted with device-
 ```
 polydata/
 ├── circuits/fl/
-│   ├── polyfiles_encrypt.fl
-│   ├── polyfiles_chunk.fl
-│   ├── polyfiles_classify.fl
-│   ├── polyfiles_manifest.fl
-│   ├── polyfiles_eslm_classify.fl
-│   ├── polyfiles_storage_router.fl
-│   ├── polyfiles_share.fl
-│   ├── polyfiles_metering.fl
+│   ├── qfiles_encrypt.fl
+│   ├── qfiles_chunk.fl
+│   ├── qfiles_classify.fl
+│   ├── qfiles_manifest.fl
+│   ├── qfiles_eslm_classify.fl
+│   ├── qfiles_storage_router.fl
+│   ├── qfiles_share.fl
+│   ├── qfiles_metering.fl
 │   └── graphs/
-│       ├── polyfiles_file_graph.fl
-│       ├── polyfiles_version_dag.fl
-│       └── polyfiles_share_graph.fl
+│       ├── qfiles_file_graph.fl
+│       ├── qfiles_version_dag.fl
+│       └── qfiles_share_graph.fl
 ├── apps/console/
 │   └── src/widgets/
 ├── packages/sdk/
@@ -751,7 +751,7 @@ polydata/
 - FastLang circuits (replacing FLIR YAML)
 - `file_registry` graph + `version_history` DAG
 - scatter-cas integration for content-addressable storage
-- SPARK biometric auth (`poly-data-v1`)
+- SPARK biometric auth (`q-data-v1`)
 - Classification system with graph overlays
 - StreamSight L0 metrics
 
@@ -771,6 +771,6 @@ polydata/
 ### Phase 4: Enterprise (Q1 2027)
 - Enterprise admin via lex bridge (opt-in)
 - Compliance/retention policies
-- SOVEREIGN classification (HSM via Poly Vault)
+- SOVEREIGN classification (HSM via Q Vault)
 - Migration tools (Google Drive, Dropbox, OneDrive)
 - ESN-AI optimization recommendations

@@ -9,7 +9,7 @@
  *            CIRCUIT_FILTER (filters to specific circuit)
  *            FILTER_RESET (clears highlights)
  *
- * Lex stream: polylabs.data.telemetry
+ * Lex stream: polyqlabs.data.telemetry
  * Metrics: polydata.upload.latency_ns, polydata.encrypt.chunk_ns,
  *          polydata.erasure.encode_ns, polydata.scatter.duration_ns
  */
@@ -24,7 +24,7 @@ export default function UploadLatencyWidget() {
   const deviationEvent = usePolydataEvent(POLYDATA_EVENTS.DEVIATION_SELECT);
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
-  const { data: liveData, status } = useStreamSubscription('polylabs.data.telemetry', {
+  const { data: liveData, status } = useStreamSubscription('polyqlabs.data.telemetry', {
     filter: { metric: 'polydata.upload.latency_ns' },
   });
 

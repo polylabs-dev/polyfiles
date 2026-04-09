@@ -18,7 +18,7 @@
  *   Listens: CLASSIFICATION_FILTER (filters queue to specific classification)
  *            FILTER_RESET (clears filter)
  *
- * Lex stream: polylabs.data.eslm.classification
+ * Lex stream: polyqlabs.data.eslm.classification
  * Required role: polydata-operator
  */
 
@@ -46,7 +46,7 @@ export default function EslmReviewQueueWidget() {
   const filterReset = usePolydataEvent(POLYDATA_EVENTS.FILTER_RESET);
 
   const { data: liveQueue, status } = useStreamSubscription(
-    'polylabs.data.eslm.classification',
+    'polyqlabs.data.eslm.classification',
     { filter: { confidence_lt: 0.8, human_reviewed: false } },
   );
 
@@ -56,7 +56,7 @@ export default function EslmReviewQueueWidget() {
     setSubmitting(item.fileName);
 
     // Submit to ESLM training loop via stream
-    // await client.emit('polylabs.data.eslm.classification.feedback', feedback);
+    // await client.emit('polyqlabs.data.eslm.classification.feedback', feedback);
 
     // Notify other widgets that a review was completed
     emitReviewCompleted({

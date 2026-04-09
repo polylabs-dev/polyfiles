@@ -1,8 +1,8 @@
-// Poly Files Document Edit — Native document preview and editing within Poly Files
+// Q Files Document Edit — Native document preview and editing within Q Files
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/files/document
-//   Composes polykit_studio_document to open scatter-stored files (PDF, DOCX, PPTX,
+//   esn/global/org/polyqlabs/files/document
+//   Composes qkit_studio_document to open scatter-stored files (PDF, DOCX, PPTX,
 //   XLSX) directly in-place. Edits are saved back through the scatter-CAS pipeline
 //   with classification-aware erasure coding. Preview generates a lightweight render
 //   without loading the full editor surface.
@@ -12,9 +12,9 @@
 //   edit_file_as_document    → classify → open editor session → return session
 //   save_document_to_scatter → encrypt → chunk → scatter-CAS put → update manifest
 
-import polykit_studio_document
-import polyfiles_classify
-import polyfiles_metering
+import qkit_studio_document
+import qfiles_classify
+import qfiles_metering
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ data FileDocumentSession : files v1 {
     dirty: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/document
+    govern lex esn/global/org/polyqlabs/files/document
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -66,7 +66,7 @@ data FileDocumentPreview : files v1 {
     rendered_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/document
+    govern lex esn/global/org/polyqlabs/files/document
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -80,7 +80,7 @@ data DocumentSaveResult : files v1 {
     saved_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/files/document
+    govern lex esn/global/org/polyqlabs/files/document
     cortex {
         infer on_write
         on_anomaly alert "files-team"
@@ -105,7 +105,7 @@ circuit preview_file_as_document(
     format: DocumentFormat,
 ) -> FileDocumentPreview
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/document
+    lex esn/global/org/polyqlabs/files/document
     precision C
     observe metrics: [previews_rendered, preview_latency_ms, preview_pages]
     monitor "preview_latency" { preview_latency_ms < 500 }
@@ -118,8 +118,8 @@ circuit preview_file_as_document(
 {
     let ts = now()
     let content = aes_gcm_decrypt(decryption_key, encrypted_content)
-    let classify_result = polyfiles_classify::classify_file(file_id, none, none, none, 0.0)
-    let render = polykit_studio_document::render_preview(content, format)
+    let classify_result = qfiles_classify::classify_file(file_id, none, none, none, 0.0)
+    let render = qkit_studio_document::render_preview(content, format)
 
     let preview = FileDocumentPreview {
         file_id: file_id,
@@ -131,7 +131,7 @@ circuit preview_file_as_document(
         rendered_at: ts,
     }
 
-    polyfiles_metering::record_usage(user_id, "files_document_preview", DimensionValues {
+    qfiles_metering::record_usage(user_id, "files_document_preview", DimensionValues {
         executions: 1, hashes: 2, bandwidth: len(content),
         storage: 0, observables: 1, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -149,7 +149,7 @@ circuit edit_file_as_document(
     mode: EditMode,
 ) -> FileDocumentSession
     profile poly_framework_standard
-    lex esn/global/org/polylabs/files/document
+    lex esn/global/org/polyqlabs/files/document
     precision C
     observe metrics: [edit_sessions_opened, edit_mode_distribution, session_latency_ms]
     monitor "edit_session_latency" { session_latency_ms < 300 }
@@ -167,11 +167,11 @@ circuit edit_file_as_document(
     let ts = now()
     let content = aes_gcm_decrypt(decryption_key, encrypted_content)
     let content_hash = sha3_256(content)
-    let classify_result = polyfiles_classify::classify_file(file_id, none, none, none, 0.0)
+    let classify_result = qfiles_classify::classify_file(file_id, none, none, none, 0.0)
     let session_seed = concat(file_id, user_id, csprng(16), encode_u64(ts))
     let session_id = bit_slice(sha3_256(session_seed), 0, 128)
 
-    polykit_studio_document::open_editor(content, format, mode)
+    qkit_studio_document::open_editor(content, format, mode)
 
     let session = FileDocumentSession {
         session_id: session_id,
@@ -200,7 +200,7 @@ circuit save_document_to_scatter(
     signing_sk: bytes(4896),
 ) -> DocumentSaveResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/files/document
+    lex esn/global/org/polyqlabs/files/document
     precision C
     constant_time false
     observe metrics: [documents_saved, save_latency_ms, scatter_chunks_written]
@@ -222,7 +222,7 @@ circuit save_document_to_scatter(
     let nonce = csprng(12)
     let (encrypted, _tag) = aes_gcm_encrypt(encryption_key, nonce, edited_content, session.file_id)
 
-    let chunks = polykit_studio_document::chunk_document(encrypted, session.scatter_policy.k, session.scatter_policy.n)
+    let chunks = qkit_studio_document::chunk_document(encrypted, session.scatter_policy.k, session.scatter_policy.n)
     let scatter_refs = parallel for chunk in chunks {
         let ref_hash = scatter_cas_put(chunk, session.scatter_policy)
         ref_hash
@@ -247,7 +247,7 @@ circuit save_document_to_scatter(
 
     emit(document_save_events, save_result)
 
-    polyfiles_metering::record_usage(user_id, "files_document_save", DimensionValues {
+    qfiles_metering::record_usage(user_id, "files_document_save", DimensionValues {
         executions: 1, hashes: 2, bandwidth: len(encrypted),
         storage: len(encrypted), observables: 2, proofs: 0, circuits: 1, mpc_sessions: 0,
     })

@@ -4,10 +4,10 @@
 |-------|-------|
 | **Version** | v0.1.0 |
 | **Status** | Draft |
-| **Lex Namespace** | `polylabs/polyfiles` |
-| **App Graph** | `circuits/fl/polyfiles_app_graph.fl` |
-| **CE Meaning** | `circuits/fl/polyfiles_meaning.fl` |
-| **Upstream Dependency** | PolyKit v0.1.0+, eStream v0.22.0+ |
+| **Lex Namespace** | `polyqlabs/qfiles` |
+| **App Graph** | `circuits/fl/qfiles_app_graph.fl` |
+| **CE Meaning** | `circuits/fl/qfiles_meaning.fl` |
+| **Upstream Dependency** | QKit v0.1.0+, eStream v0.22.0+ |
 
 ---
 
@@ -17,18 +17,18 @@
 
 | # | Module | Partition | SLA | Description |
 |---|--------|-----------|-----|-------------|
-| 1 | `polyfiles_chunk` | Backend | Premium | Erasure-coded chunking over scatter-CAS |
-| 2 | `polyfiles_classify` | Backend | Standard | Rule-based file type classification |
-| 3 | `polyfiles_dedup` | Backend | Standard | Content-defined chunking + dedup |
-| 4 | `polyfiles_document_edit` | Head | Premium | CRDT document editing via PolyDocs bridge |
-| 5 | `polyfiles_encrypt` | Backend | Premium | ML-KEM-1024 envelope encryption |
-| 6 | `polyfiles_eslm_classify` | Backend | Standard | ESLM-powered semantic classification |
-| 7 | `polyfiles_manifest` | Backend | Premium | File manifest + metadata index |
-| 8 | `polyfiles_metering` | Backend | Standard | Per-user storage metering + quota |
-| 9 | `polyfiles_platform_health` | Backend | Standard | Health probes, latency histograms |
-| 10 | `polyfiles_rbac` | Shared | Premium | Field-level access control + sharing policies |
-| 11 | `polyfiles_share` | Backend | Premium | PQ-encrypted share links + ACL propagation |
-| 12 | `polyfiles_storage_router` | Backend | Premium | Hot/warm/cold tiering + scatter routing |
+| 1 | `qfiles_chunk` | Backend | Premium | Erasure-coded chunking over scatter-CAS |
+| 2 | `qfiles_classify` | Backend | Standard | Rule-based file type classification |
+| 3 | `qfiles_dedup` | Backend | Standard | Content-defined chunking + dedup |
+| 4 | `qfiles_document_edit` | Head | Premium | CRDT document editing via PolyDocs bridge |
+| 5 | `qfiles_encrypt` | Backend | Premium | ML-KEM-1024 envelope encryption |
+| 6 | `qfiles_eslm_classify` | Backend | Standard | ESLM-powered semantic classification |
+| 7 | `qfiles_manifest` | Backend | Premium | File manifest + metadata index |
+| 8 | `qfiles_metering` | Backend | Standard | Per-user storage metering + quota |
+| 9 | `qfiles_platform_health` | Backend | Standard | Health probes, latency histograms |
+| 10 | `qfiles_rbac` | Shared | Premium | Field-level access control + sharing policies |
+| 11 | `qfiles_share` | Backend | Premium | PQ-encrypted share links + ACL propagation |
+| 12 | `qfiles_storage_router` | Backend | Premium | Hot/warm/cold tiering + scatter routing |
 | 13 | `file_graph` | Backend | Premium | Stratum property graph: files, folders, tags |
 | 14 | `share_graph` | Backend | Standard | Share relationship graph (users, groups, links) |
 | 15 | `version_dag` | Backend | Standard | Version history DAG per file |
@@ -36,18 +36,18 @@
 ### 1.2 Intra-Graph Dependencies
 
 ```
-polyfiles_chunk          -> polyfiles_encrypt
-polyfiles_dedup          -> polyfiles_chunk
-polyfiles_classify       -> polyfiles_manifest
-polyfiles_eslm_classify  -> polyfiles_classify
-polyfiles_document_edit  -> polyfiles_manifest, polyfiles_encrypt
-polyfiles_manifest       -> file_graph
-polyfiles_metering       -> polyfiles_manifest
-polyfiles_platform_health-> polyfiles_metering
-polyfiles_rbac           -> file_graph
-polyfiles_share          -> polyfiles_rbac, share_graph
-polyfiles_storage_router -> polyfiles_chunk, polyfiles_dedup
-version_dag              -> polyfiles_manifest
+qfiles_chunk          -> qfiles_encrypt
+qfiles_dedup          -> qfiles_chunk
+qfiles_classify       -> qfiles_manifest
+qfiles_eslm_classify  -> qfiles_classify
+qfiles_document_edit  -> qfiles_manifest, qfiles_encrypt
+qfiles_manifest       -> file_graph
+qfiles_metering       -> qfiles_manifest
+qfiles_platform_health-> qfiles_metering
+qfiles_rbac           -> file_graph
+qfiles_share          -> qfiles_rbac, share_graph
+qfiles_storage_router -> qfiles_chunk, qfiles_dedup
+version_dag              -> qfiles_manifest
 ```
 
 ---
@@ -116,10 +116,10 @@ Tracks ESLM classification accuracy against ground truth labels. CE calibrates c
 
 | Source Module | Target | Edge Type | Shared Fields |
 |---------------|--------|-----------|---------------|
-| `polyfiles_document_edit` | PolyDocs `polydocs_editor` | `EDGE_BRIDGE_TO` | `document_ops`, `crdt_state`, `version_id` |
-| `polyfiles_share` | PolyKit `polykit_collaboration` | `EDGE_BRIDGE_TO` | `share_token`, `acl_policy`, `invite_state` |
-| `polyfiles_chunk` | eStream `scatter_cas_core` | `EDGE_BRIDGE_TO` | `chunk_id`, `erasure_params`, `shard_map` |
-| `polyfiles_storage_router` | eStream `scatter_cas_core` | `EDGE_BRIDGE_TO` | `tier_policy`, `routing_table`, `replica_set` |
+| `qfiles_document_edit` | PolyDocs `qdocs_editor` | `EDGE_BRIDGE_TO` | `document_ops`, `crdt_state`, `version_id` |
+| `qfiles_share` | QKit `qkit_collaboration` | `EDGE_BRIDGE_TO` | `share_token`, `acl_policy`, `invite_state` |
+| `qfiles_chunk` | eStream `scatter_cas_core` | `EDGE_BRIDGE_TO` | `chunk_id`, `erasure_params`, `shard_map` |
+| `qfiles_storage_router` | eStream `scatter_cas_core` | `EDGE_BRIDGE_TO` | `tier_policy`, `routing_table`, `replica_set` |
 
 ---
 
